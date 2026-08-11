@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / type-checking caches
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Env files — provider credentials and secrets live here, never commit them
+.env
+.env.*
+!.env.example
+
+# Internal-only notes — never commit (see private/README-DO-NOT-COMMIT.md)
+private/
+
+# SQLite / SQLCipher databases — this project never persists content to git
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
