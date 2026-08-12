@@ -16,7 +16,12 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from sendashield.normalise import ZERO_WIDTH_CHARS, NormalisationError, normalise
+from sendashield.normalise import (
+    ZERO_WIDTH_CHARS,
+    NormalisationError,
+    _require_rfc5322_shape,
+    normalise,
+)
 
 HEADERS = "From: a@example.com\r\nTo: b@example.com\r\nSubject: {subject}\r\nMIME-Version: 1.0\r\n"
 
@@ -447,6 +452,247 @@ class TestPathologicalInput:
         normalise(raw)
         elapsed = time.perf_counter() - started
         assert elapsed < 10.0, f"{label}: normalise() took {elapsed:.1f}s — likely quadratic again"
+
+    @pytest.mark.parametrize(
+        ("label", "raw"),
+        [
+            ("one huge colonless line", b"A" * 2_000_000),
+            ("many header-shaped lines", b"X-Pad: v\r\n" * 200_000),
+            ("many colonless lines", (b"B" * 999 + b"\r\n") * 2_000),
+        ],
+    )
+    def test_shape_check_completes_in_bounded_time(self, label: str, raw: bytes) -> None:
+        """The shape check is the first thing to touch attacker-controlled bytes.
+
+        It runs before parsing, on unvalidated input, so it is the easiest thing in the
+        module to turn into a CPU sink. Bounded two ways: only the first
+        `_HEADER_SCAN_LIMIT` bytes are scanned at all, and the field-name quantifier is
+        possessive so a long line with no colon fails at once instead of backtracking
+        through every prefix.
+        """
+        started = time.perf_counter()
+        with pytest.raises(NormalisationError):
+            normalise(raw)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 5.0, f"{label}: shape check took {elapsed:.1f}s"
+
+
+class TestNonMailInputFailsClosed:
+    """A mail parser succeeding on non-mail input is a fail-open, not a parse.
+
+    `BytesParser` does not reject an iCalendar file — every `NAME:value` line has the shape
+    of a header, so the whole file becomes a header block with an empty body. normalise()
+    returned `"\\n\\n"`, no defects, no error; a detector scanned an empty string, found
+    nothing, and the item was allowed. CLAUDE.md invariant 2 requires quarantine.
+    """
+
+    ICS = (
+        b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+        b"SUMMARY:Onkologie Nachsorge\r\nDTSTART:20260815T090000Z\r\n"
+        b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+
+    def test_icalendar_raises_instead_of_returning_empty_text(self) -> None:
+        """The exact input that used to normalise to '\\n\\n' with no signal at all."""
+        with pytest.raises(NormalisationError, match="iCalendar"):
+            normalise(self.ICS)
+
+    def test_icalendar_rejection_survives_leading_whitespace_and_bom(self) -> None:
+        with pytest.raises(NormalisationError, match="iCalendar"):
+            normalise("﻿\r\n  ".encode() + self.ICS)
+
+    def test_lowercase_icalendar_is_rejected(self) -> None:
+        # RFC 5545 property names are case-insensitive; the sniff must be too.
+        with pytest.raises(NormalisationError, match="iCalendar"):
+            normalise(self.ICS.lower())
+
+    @pytest.mark.parametrize(
+        ("label", "raw"),
+        [
+            ("vCard", b"BEGIN:VCARD\r\nFN:Jane Doe\r\nEND:VCARD\r\n"),
+            ("PDF", b"%PDF-1.7\r\n1 0 obj\r\n<< /Type /Catalog >>\r\n"),
+            ("ZIP container", b"PK\x03\x04\x14\x00\x00\x00\x08\x00 some docx bytes"),
+            ("JSON", b'{"subject": "hi", "body": "4242424242424242"}'),
+            ("XML", b'<?xml version="1.0"?><note><to>Tove</to></note>'),
+            ("HTML page", b"<!DOCTYPE html>\n<html><body><p>hi</p></body></html>"),
+            ("plain prose", b"just some text that was never an email at all\n"),
+            ("empty", b""),
+            ("whitespace only", b"   \r\n\r\n  \t\n"),
+        ],
+    )
+    def test_non_mail_input_raises(self, label: str, raw: bytes) -> None:
+        with pytest.raises(NormalisationError):
+            normalise(raw)
+
+    def test_quoted_from_line_in_body_cannot_vouch_for_a_headerless_message(self) -> None:
+        """Only the header block counts, or any text quoting an email would qualify."""
+        raw = b"BEGIN:VCALENDAR\r\nDESCRIPTION:he wrote\r\n\r\nFrom: a@example.com\r\n"
+        with pytest.raises(NormalisationError):
+            normalise(raw)
+
+    def test_non_empty_input_that_yields_no_content_raises(self) -> None:
+        """The format-agnostic backstop, for whatever the sniff does not recognise.
+
+        Real headers, so the shape check passes — but no subject and an empty body, so the
+        result would be a contentless string that reads to a detector exactly like a clean
+        scan of a benign message.
+        """
+        raw = b"From: a@example.com\r\nTo: b@example.com\r\n\r\n"
+        with pytest.raises(NormalisationError, match="no content at all"):
+            normalise(raw)
+
+    def test_gate_2_is_reachable_with_gate_1_satisfied(self) -> None:
+        """A backstop that only fires when the first gate already fired is not a backstop.
+
+        Asserts the two checks are independent by calling the shape gate directly: it must
+        pass on this input (real `From:` header), so the rejection above can only have come
+        from the contentless-output check at the end of the pipeline.
+        """
+        raw = b"From: a@example.com\r\nTo: b@example.com\r\n\r\n"
+        _require_rfc5322_shape(raw)  # must not raise — Gate 1 is satisfied
+        with pytest.raises(NormalisationError, match="no content at all"):
+            normalise(raw)
+
+    def test_gate_2_catches_a_format_the_sniff_does_not_know(self) -> None:
+        """The case Gate 2 exists for: non-mail input Gate 1 has no sentinel for.
+
+        A made-up `NAME:value` line format, like iCalendar in shape but on no sentinel
+        list, carrying a field named `Date` — so the header check accepts it. Every line
+        still parses as a header, leaving no body and no subject, and nothing is what must
+        not pass.
+        """
+        raw = b"RECORD:BEGIN\r\nDate:2026-08-15\r\nFIELD:value\r\nRECORD:END\r\n"
+        _require_rfc5322_shape(raw)  # Gate 1 accepts it — "Date" is a core header
+        with pytest.raises(NormalisationError, match="no content at all"):
+            normalise(raw)
+
+    def test_gate_2_does_not_fire_when_content_was_actually_extracted(self) -> None:
+        """Gate 2 asks "did anything survive", not "did this look strange".
+
+        The same made-up format, but with a field named `Subject` — which the mail parser
+        turns into a real subject line. Something was extracted, so there is something to
+        scan, and quarantining it would be over-rejection rather than failing closed.
+        """
+        raw = b"RECORD:BEGIN\r\nSubject:not really mail\r\nFIELD:value\r\n"
+        assert normalise(raw).text.strip() == "not really mail"
+
+
+class TestNonMailRejectionDoesNotOverreach:
+    """Rejecting real mail is not a safe failure — it is a different failure.
+
+    The user loses access to their own inbox, and per invariant 2 they lose it silently as
+    a quarantine. These pin the boundary from the other side.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "raw"),
+        [
+            (
+                "no body at all after the header separator",
+                b"From: a@example.com\r\nTo: b@example.com\r\nSubject: Running late\r\n\r\n",
+            ),
+            (
+                "body present but whitespace only",
+                b"From: a@example.com\r\nTo: b@example.com\r\nSubject: Running late\r\n"
+                b"\r\n   \r\n\t\r\n",
+            ),
+        ],
+    )
+    def test_subject_only_message_with_empty_body_is_accepted(self, label: str, raw: bytes) -> None:
+        """Gate 2 must not reject a real message whose body is genuinely empty.
+
+        "Subject: Running late" with nothing under it is ordinary mail, not a parse
+        failure. This is the same false positive the header allowlist is kept broad to
+        avoid, arriving through the other gate — the subject is content, so there is
+        something to scan and something to mask, and the item must survive to be scanned.
+        """
+        assert normalise(raw).text.strip() == "Running late"
+
+    def test_subject_only_message_is_scannable_not_merely_accepted(self) -> None:
+        # Accepting it is only half the point: the surviving text has to still carry the
+        # subject, since for this class of message the subject is the entire attack surface
+        # (and, at step 2, the entire content of a calendar event).
+        raw = b"From: a@example.com\r\nTo: b@example.com\r\nSubject: card 4242424242424242\r\n\r\n"
+        assert "4242424242424242" in normalise(raw).text
+
+    def test_message_with_only_a_date_header_is_accepted(self) -> None:
+        raw = b"Date: Wed, 12 Aug 2026 11:11:00 +0200\r\n\r\nbody text here\r\n"
+        assert "body text here" in normalise(raw).text
+
+    def test_message_whose_body_begins_with_a_sentinel_is_accepted(self) -> None:
+        """A forwarded calendar invite pasted into a real email is still a real email.
+
+        The sniff looks at the start of the *input*, not at the body, precisely so this
+        keeps working.
+        """
+        raw = (
+            b"From: a@example.com\r\nTo: b@example.com\r\nSubject: FW: invite\r\n\r\n"
+            b"BEGIN:VCALENDAR\r\nSUMMARY:Standup\r\nEND:VCALENDAR\r\n"
+        )
+        assert "Standup" in normalise(raw).text
+
+    def test_calendar_mime_part_is_still_accepted_as_mail(self) -> None:
+        # text/calendar carried inside a real message — the common way invites arrive.
+        raw = (
+            b"From: a@example.com\r\nTo: b@example.com\r\nSubject: Invitation\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b'Content-Type: multipart/alternative; boundary="B"\r\n\r\n'
+            b"--B\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+            b"Please join us.\r\n"
+            b"--B--\r\n"
+        )
+        assert "Please join us." in normalise(raw).text
+
+
+class TestAuditFieldsCarryNoContent:
+    """`transforms`, `defects` and `anomalies` may reach the audit log; text may not.
+
+    CLAUDE.md invariant 5: the audit log stores "hashes, categories, and timestamps — never
+    text". Any of these fields built by interpolating a header value is a path from
+    attacker-controlled content into permanent storage.
+    """
+
+    def test_transfer_encoding_header_cannot_inject_content_into_transforms(self) -> None:
+        # Regression: `transforms` used to carry the raw Content-Transfer-Encoding value,
+        # so a sender could place a card number in that header and have it recorded.
+        raw = (
+            b"From: a@example.com\r\nTo: b@example.com\r\nSubject: hi\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Transfer-Encoding: 7bit CARD 4242424242424242\r\n\r\nbody\r\n"
+        )
+        result = normalise(raw)
+        assert "cte:other" in result.transforms
+        assert not any("4242424242424242" in t for t in result.transforms)
+
+    @pytest.mark.parametrize("cte", ["7bit", "8bit", "binary", "quoted-printable", "base64"])
+    def test_rfc2045_encodings_are_still_named_exactly(self, cte: str) -> None:
+        # The closed set must not blur the encodings that actually matter for debugging.
+        raw = _eml(content_type="text/plain; charset=utf-8", cte=cte, body=b"Zm9v\r\n")
+        assert f"cte:{cte}" in normalise(raw).transforms
+
+    def test_charset_transform_is_a_registered_codec_name(self) -> None:
+        # charset: is only recorded after bytes.decode() accepted the name, so it cannot be
+        # arbitrary text. A bogus charset falls back rather than being echoed.
+        raw = (
+            b"From: a@example.com\r\nTo: b@example.com\r\nSubject: hi\r\n"
+            b'Content-Type: text/plain; charset="IBAN DE89370400440532013000"\r\n\r\nbody\r\n'
+        )
+        result = normalise(raw)
+        assert not any("DE89370400440532013000" in t for t in result.transforms)
+        assert "charset:utf-8" in result.transforms
+
+    def test_exception_messages_name_formats_not_content(self) -> None:
+        """Rejecting non-mail must not quote the thing being rejected."""
+        ics = (
+            b"BEGIN:VCALENDAR\r\nSUMMARY:Onkologie Nachsorge\r\n"
+            b"X-CARD:4242424242424242\r\nEND:VCALENDAR\r\n"
+        )
+        with pytest.raises(NormalisationError) as excinfo:
+            normalise(ics)
+        message = str(excinfo.value)
+        assert "iCalendar" in message
+        assert "Onkologie" not in message
+        assert "4242424242424242" not in message
 
 
 class TestFailureModes:

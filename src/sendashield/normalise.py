@@ -14,6 +14,14 @@ drift silently.
 Pipeline, in order, applied independently to the subject and the body and then
 concatenated:
 
+0. **Refuse input that is not a mail message** (`_require_rfc5322_shape`), before parsing.
+   A mail parser does not fail on non-mail input; it succeeds on it, quietly, returning
+   whatever it salvaged. That is a fail-*open*: an iCalendar file used to normalise to
+   `"\\n\\n"` with no error and no defect, so a detector scanned an empty string, found
+   nothing, and the item was allowed. `CLAUDE.md` invariant 2 requires the opposite.
+   A second, format-agnostic backstop at the end of the pipeline raises if non-empty input
+   produced no content at all.
+
 1. **Select the body part.** `EmailMessage.get_body(preferencelist=("plain", "html"))`
    walks `multipart/alternative` and `multipart/related` per RFC 2183, preferring
    `text/plain` over `text/html`, and skips parts with `Content-Disposition: attachment`.
@@ -95,6 +103,7 @@ completeness:
 
 from __future__ import annotations
 
+import codecs
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -150,6 +159,88 @@ _SKIP_TAGS = frozenset({"script", "style", "head", "title"})
 _SKIP_TAGS_ORDERED = tuple(sorted(_SKIP_TAGS))
 
 
+#: Leading byte sequences of formats that are definitively not RFC 5322. Checked purely to
+#: produce a *specific* error — the core-header requirement below rejects all of these
+#: anyway, but "looks like iCalendar" is a far better thing to find in a log than "no mail
+#: headers". Matched after leading whitespace and any BOM.
+_NON_MAIL_SENTINELS: tuple[tuple[bytes, str], ...] = (
+    (b"begin:vcalendar", "iCalendar (RFC 5545)"),
+    (b"begin:vcard", "vCard"),
+    (b"%pdf-", "PDF"),
+    (b"pk\x03\x04", "ZIP-based container (docx/xlsx/odt)"),
+    (b"\x89png\r\n\x1a\n", "PNG"),
+    (b"\xff\xd8\xff", "JPEG"),
+    (b"gif8", "GIF"),
+    (b"<?xml", "XML"),
+    (b"<!doctype", "HTML"),
+    (b"<html", "HTML"),
+    (b"{", "JSON"),
+    (b"[", "JSON"),
+)
+
+#: RFC 5322 §3.6.8 field name: printable US-ASCII (33-126) except colon, then a colon.
+#: Possessive (`++`) so a long non-header line fails at once instead of backtracking one
+#: character at a time — this runs on attacker-controlled bytes before anything else does.
+_HEADER_FIELD_RE = re.compile(r"^([!-9;-~]++):", re.MULTILINE)
+
+#: A message must carry at least one of these to be treated as mail.
+#:
+#: **Before you tighten this to `{"date", "from"}`:** yes, RFC 5322 §3.6 makes those the
+#: only mandatory headers, and yes, this set is looser than the spec. That is deliberate,
+#: because the two failure directions here are not symmetric.
+#:
+#: - Too loose: some non-mail input gets parsed as mail. It then almost certainly yields no
+#:   content and Gate 2 (the contentless-output check in `normalise()`) rejects it anyway.
+#: - Too strict: a *real* message is refused. Per `CLAUDE.md` invariant 2 the caller
+#:   quarantines it — so the user silently loses a real message from their own inbox, with
+#:   nothing to indicate the cause was a header allowlist rather than a threat.
+#:
+#: The second is the expensive one, and it is invisible: nobody files a bug for mail they
+#: never knew arrived. Real mail in the wild is routinely missing `Date`, `From`, or both —
+#: mailing-list output, automated senders, anything that has been through a broken relay.
+#: This function's job is to reject input that is not mail *at all*; policing malformed mail
+#: is a different job with a different cost model. Tighten this only against a corpus of
+#: real-world malformed mail, never against the RFC alone.
+_CORE_MAIL_HEADERS = frozenset(
+    {
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "sender",
+        "reply-to",
+        "return-path",
+        "date",
+        "subject",
+        "message-id",
+        "in-reply-to",
+        "references",
+        "received",
+        "delivered-to",
+        "mime-version",
+    }
+)
+
+#: The transfer encodings RFC 2045 §6 defines. Any other value is recorded as `cte:other`.
+#:
+#: `Content-Transfer-Encoding` is attacker-controlled free text, and `transforms` is an
+#: audit-trail field — so interpolating the header value into it verbatim put message
+#: content one hop from the audit log, which `CLAUDE.md` invariant 5 forbids ("categories,
+#: and timestamps — never text"). A sender writing
+#: `Content-Transfer-Encoding: 7bit CARD 4242424242424242` got exactly that string back out
+#: in `transforms`. Mapping to a closed set costs the exact name of an unrecognised
+#: encoding, which is worth strictly less than the guarantee that this field is a category.
+#:
+#: The sibling `charset:` transform needs no such list: its value is only ever recorded
+#: after `bytes.decode()` accepted it, so it is necessarily a registered Python codec name
+#: and cannot be arbitrary text.
+_KNOWN_CTES = frozenset({"7bit", "8bit", "binary", "quoted-printable", "base64"})
+
+#: Cap on how much of the input is scanned for headers. Real header blocks are a few KB;
+#: this only bounds work on hostile input, since the scan happens before any parsing.
+_HEADER_SCAN_LIMIT = 64 * 1024
+
+
 #: Whitespace between two digits, removed before scanning a dropped comment. People group
 #: identifiers (`4242 4242 4242 4242`), and a grouped card contains no long digit run.
 _INTER_DIGIT_SPACE_RE = re.compile(r"(?<=\d)[^\S\n]+(?=\d)")
@@ -188,8 +279,9 @@ class NormalisationError(Exception):
     """Raised when a message cannot be reduced to text at all.
 
     Not raised for content that decodes fine but is empty or benign — only for structural
-    failures (no scannable body part found, or byte decoding exhausted every fallback,
-    which should be unreachable given `latin-1` never raises). Per
+    failures: input that is not an RFC 5322 message (step 0), no scannable body part found,
+    non-empty input that yields no content at all, or byte decoding exhausting every
+    fallback (which should be unreachable given `latin-1` never raises). Per
     `docs/architecture.md` §4 ("Unknown format = quarantine"), the caller — the detection
     pipeline, once it exists — is expected to catch this and quarantine the item rather
     than guess at partial content. `normalise()` itself does not quarantine anything; it
@@ -248,6 +340,8 @@ def normalise(raw_message: bytes) -> NormalisedText:
     transforms: list[str] = []
     anomalies: list[str] = []
 
+    _require_rfc5322_shape(raw_message)
+
     msg = BytesParser(policy=policy.default).parsebytes(raw_message)
     if not isinstance(msg, EmailMessage):  # pragma: no cover - policy.default guarantees this
         raise NormalisationError(f"parser returned {type(msg).__name__}, expected EmailMessage")
@@ -265,8 +359,9 @@ def normalise(raw_message: bytes) -> NormalisedText:
     if not isinstance(body_part, EmailMessage):  # pragma: no cover - as above
         raise NormalisationError(f"body part is {type(body_part).__name__}, expected EmailMessage")
 
-    cte = str(body_part.get("Content-Transfer-Encoding", "7bit")).lower()
-    transforms.append(f"cte:{cte}")
+    cte = str(body_part.get("Content-Transfer-Encoding", "7bit")).strip().lower()
+    # Category, never the raw header value — see `_KNOWN_CTES`.
+    transforms.append(f"cte:{cte if cte in _KNOWN_CTES else 'other'}")
 
     payload = body_part.get_payload(decode=True)
     if not isinstance(payload, bytes):
@@ -310,12 +405,94 @@ def normalise(raw_message: bytes) -> NormalisedText:
     transforms.append("nfc_normalized")
 
     text = subject + _CONCAT_SEPARATOR + body_text
+
+    if not text.strip():
+        # The backstop for whatever the shape check above did not recognise. Non-empty
+        # input that normalises to nothing means the parser found no content where content
+        # demonstrably exists — the salvage was a failure wearing a success's clothes, and
+        # per invariant 2 that is a quarantine, not an empty scan. (Reached only for input
+        # that passed the header check, since empty input is rejected there.)
+        raise NormalisationError(
+            f"{len(raw_message)} bytes of input normalised to no content at all — "
+            f"the message could not be meaningfully parsed"
+        )
+
     return NormalisedText(
         text=text,
         transforms=tuple(transforms),
         defects=defects,
         anomalies=tuple(anomalies),
     )
+
+
+def _require_rfc5322_shape(raw: bytes) -> None:
+    """Reject input that is not an RFC 5322 message, before the parser gets a chance to.
+
+    `BytesParser` does not fail on non-mail input — it succeeds on it. Every line of an
+    iCalendar file (`BEGIN:VCALENDAR`, `SUMMARY:Onkologie Nachsorge`) has the shape of a
+    header, so the whole file parses as a header block with an empty body, and `normalise()`
+    used to return `"\\n\\n"` with no defects and no error. A detector downstream then finds
+    nothing in an empty string and the item is allowed. That is `CLAUDE.md` invariant 2
+    inverted: an unparseable format passing through as if it were clean, which is exactly
+    the silent failure this project exists to prevent.
+
+    Two checks, in order of how specific their error message is:
+
+    1. A leading sentinel for a format known not to be mail (`_NON_MAIL_SENTINELS`).
+    2. At least one core mail header (`_CORE_MAIL_HEADERS`) in the header block. This is
+       the general check — it catches formats not on the sentinel list, including ones
+       that don't exist yet.
+
+    Only the header block is scanned, so a body quoting `From:` cannot vouch for a message
+    that has no real headers of its own.
+
+    **Format detection runs on bytes, never on decoded text.** Decoding has already assumed
+    the answer to the question this function is asking. The concrete bug: a UTF-8 BOM
+    decoded via latin-1 becomes three ordinary characters, so stripping `U+FEFF` from the
+    decoded string does nothing at all — silently, since the strip still "succeeds" — and a
+    BOM-prefixed iCalendar file sailed past the sentinel check. Anything deciding *what a
+    thing is* must look at the bytes; only code that has already established what it is
+    holding may decode. (The header scan below does decode, via latin-1 — but by then the
+    question is "which field names are present", not "is this mail", and latin-1 maps every
+    byte so nothing can fail to decode.)
+    """
+    if not raw.strip():
+        raise NormalisationError("input is empty or whitespace only")
+
+    head = raw[:_HEADER_SCAN_LIMIT]
+
+    # Sniffed as bytes, not as decoded text: a UTF-8 BOM decoded via latin-1 becomes three
+    # separate characters, so stripping U+FEFF from the decoded string silently does
+    # nothing and the sentinel below never matches. Strip the BOM where it still is one.
+    sniff = head
+    if sniff.startswith(codecs.BOM_UTF8):
+        sniff = sniff[len(codecs.BOM_UTF8) :]
+    # UTF-16 input needs no special case: its NUL-interleaved bytes match no sentinel and
+    # carry no recognisable header, so the check below rejects it regardless.
+    sniff = sniff.lstrip().lower()
+    for sentinel, format_name in _NON_MAIL_SENTINELS:
+        if sniff.startswith(sentinel):
+            raise NormalisationError(
+                f"input is {format_name}, not an RFC 5322 message — refusing to parse it as "
+                f"mail. Per docs/architecture.md §4 the caller must quarantine rather than "
+                f"scan whatever text a mail parser salvages from it."
+            )
+
+    # latin-1 maps every byte and cannot raise, so binary input degrades to mojibake that
+    # simply fails the check below rather than blowing up before it can be rejected.
+    head_text = head.decode("latin-1")
+
+    # RFC 5322 §2.1: the header block ends at the first empty line. No empty line means the
+    # whole (capped) input is header candidates — which is precisely the .ics case.
+    separator = re.search(r"\r?\n\r?\n", head_text)
+    header_block = head_text[: separator.start()] if separator else head_text
+
+    found = {match.group(1).lower() for match in _HEADER_FIELD_RE.finditer(header_block)}
+    if not found & _CORE_MAIL_HEADERS:
+        raise NormalisationError(
+            "input carries no recognisable mail headers (found none of From, To, Date, "
+            "Subject, Message-ID, Received, ...) — refusing to parse it as mail"
+        )
 
 
 def _collect_defects(msg: EmailMessage) -> tuple[str, ...]:
