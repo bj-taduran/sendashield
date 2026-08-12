@@ -49,6 +49,19 @@ user asked for it. Say so and stop.
     no access to other items. Temperature 0, grammar-constrained JSON, strict schema
     validation. Parse failure or timeout → quarantine, with **no lenient retry**. Its input
     is attacker-controlled text; it is the least privileged component in the system.
+12. **A guard that has never failed is not known to work.** Every check — test, assertion,
+    schema rule, CI step — must be *demonstrated* to fail when the thing it guards is
+    broken, at the time it is written. Break it deliberately, watch it go red, put it back.
+    Where the demonstration can be committed as a test, commit it; where it cannot, record
+    what was done and what was observed in the commit message.
+
+    **This is the characteristic failure of this codebase**, not a hypothetical. Every one
+    of these shipped green while checking nothing: an `.ics` file normalised to `""` with
+    no error, so a detector "scanned" empty text and allowed the item; fixtures asserting
+    that strings must not leak, where the string was never in the message to begin with;
+    a CI `mypy` step pointed at two empty packages, reporting success over zero lines for
+    the entire life of the project so far. Same shape every time — a green light for work
+    not done. A silent leak looks exactly like success, and so does a silent non-check.
 
 ## Stack
 

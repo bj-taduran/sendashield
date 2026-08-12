@@ -24,12 +24,19 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from sendashield.normalise import NormalisedText, normalise, normalise_calendar
+from sendashield.normalise import (
+    NormalisedText,
+    collapse_digit_separators,
+    normalise,
+    normalise_calendar,
+)
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 SCHEMA_PATH = Path(__file__).parent / "fixtures" / "expected.schema.json"
@@ -151,27 +158,11 @@ DECLARED_SYNTHETIC_IDENTIFIERS = frozenset(
 #: net, not a detector, and it errs toward flagging so nothing slips by unreviewed.
 _IDENTIFIER_SHAPED_RE = re.compile(r"\b(?:[A-Z]{2}\d{2}[A-Z0-9]{10,30}|[0-9A-Z]*\d{12,})\b")
 
-#: Any separator people put *between digit groups* — whitespace (including NBSP), hyphens,
-#: dots. Removed before the second scan pass, because a card written in groups contains no
-#: long digit run: "4242 4242 4242 4242" and "4242-4242-4242-4242" both have a longest run
-#: of four.
-#:
-#: Hyphens and dots were missing until the dash-grouped fixtures were added, and the gap was
-#: total rather than partial: `4242-4242-4242-4242` produced **no tokens at all**, so an
-#: undeclared real card written that way passed the guard in silence. That is the precise
-#: mistake this guard exists to catch, and it is how card numbers are printed on the cards
-#: themselves.
-#:
-#: Known false positive, accepted: a dotted quad like `192.168.100.100` collapses to twelve
-#: digits and will be flagged. That is the intended direction — declaring one IP address
-#: costs a line, and the opposite error puts real data in git history permanently.
-_INTER_DIGIT_SEPARATOR_RE = re.compile(r"(?<=\d)[\s\u00a0\-.]+(?=\d)")
-
 
 def _identifier_shaped_tokens(text: str) -> set[str]:
     """Identifier-shaped tokens in `text`, both as written and with digit grouping removed."""
     return set(_IDENTIFIER_SHAPED_RE.findall(text)) | set(
-        _IDENTIFIER_SHAPED_RE.findall(_INTER_DIGIT_SEPARATOR_RE.sub("", text))
+        _IDENTIFIER_SHAPED_RE.findall(collapse_digit_separators(text, across_lines=True))
     )
 
 
@@ -297,6 +288,108 @@ def test_golden_fixture_parses_without_defects(expected_path: Path) -> None:
     assert defects == (), f"{raw_path.name} parsed with defects: {defects}"
 
 
+class Rule(StrEnum):
+    """Stable identifiers for the cross-field rules a fixture must satisfy.
+
+    Codes rather than bare messages so `TestConsistencyChecksCanFail` can assert that
+    *every* rule has been watched to fail. Adding a member without adding a proof case
+    breaks that test by construction — which is the point, per CLAUDE.md invariant 12.
+    """
+
+    SPAN_OUT_OF_BOUNDS = "span_out_of_bounds"
+    SPAN_TEXT_MISMATCH = "span_text_mismatch"
+    ALLOW_WITH_SPANS = "allow_with_spans"
+    LEAK_STRING_ABSENT = "leak_string_absent"
+    STRIPPED_ABSENT_FROM_SOURCE = "stripped_absent_from_source"
+    STRIPPED_SURVIVED = "stripped_survived"
+    ANOMALY_SET_MISMATCH = "anomaly_set_mismatch"
+
+
+@dataclass(frozen=True)
+class ConsistencyError:
+    rule: Rule
+    message: str
+
+
+def consistency_errors(
+    name: str, expected: dict[str, Any], normalised: NormalisedText, raw_source: str
+) -> list[ConsistencyError]:
+    """Every cross-field check a fixture must satisfy, as data rather than as assertions.
+
+    Extracted from the test that calls it so the rules can be *demonstrated to fail* — see
+    `TestConsistencyChecksCanFail`. Per CLAUDE.md invariant 12 a check nobody has watched
+    go red is not known to work, and this file's entire job is catching fixtures that
+    quietly assert nothing; it must not become one itself. Returning a list also reports
+    every problem with a fixture at once rather than only the first.
+    """
+    errors: list[ConsistencyError] = []
+    text = normalised.text
+
+    def fail(rule: Rule, message: str) -> None:
+        errors.append(ConsistencyError(rule, f"{name}: {message}"))
+
+    for span in expected["expected_spans"]:
+        start, end, claimed = span["start"], span["end"], span["text"]
+        if not 0 <= start < end <= len(text):
+            fail(
+                Rule.SPAN_OUT_OF_BOUNDS,
+                f"span [{start}:{end}] out of bounds for normalised text of length {len(text)}",
+            )
+        elif text[start:end] != claimed:
+            fail(
+                Rule.SPAN_TEXT_MISMATCH,
+                f"normalised_text[{start}:{end}] is {text[start:end]!r}, "
+                f"fixture claims {claimed!r}",
+            )
+
+    if expected["expected_action"] == "allow" and expected["expected_spans"]:
+        fail(
+            Rule.ALLOW_WITH_SPANS,
+            "expected_action is 'allow' but declares spans — an allowed item should have "
+            "nothing found to allow past",
+        )
+
+    for leaked in expected["must_not_appear_in_output"]:
+        if leaked not in text:
+            fail(
+                Rule.LEAK_STRING_ABSENT,
+                f"must_not_appear_in_output entry {leaked!r} does not appear anywhere in "
+                f"the raw normalised text — fixture isn't testing a real leak",
+            )
+
+    for stripped in expected.get("expected_stripped", []):
+        # Two halves, and both matter. Present in the source: otherwise the fixture claims
+        # to strip something that was never there, and passes forever while testing
+        # nothing. Absent from the normalised text: the actual assertion.
+        if stripped not in raw_source:
+            fail(
+                Rule.STRIPPED_ABSENT_FROM_SOURCE,
+                f"expected_stripped entry {stripped!r} does not appear in the raw fixture "
+                f"at all — it cannot be testing that the string is stripped. (The check "
+                f"reads raw bytes, so the fixture must not be base64 or quoted-printable "
+                f"encoded.)",
+            )
+        elif stripped in text:
+            fail(
+                Rule.STRIPPED_SURVIVED,
+                f"expected_stripped entry {stripped!r} survived into the normalised text "
+                f"— L0 stripping did not remove it, so it would reach the model",
+            )
+
+    if "expected_anomalies" in expected and set(normalised.anomalies) != set(
+        expected["expected_anomalies"]
+    ):
+        # Exact set, not a subset: a new false positive appearing across the corpus is as
+        # much a behaviour change as a signal that stopped being raised.
+        fail(
+            Rule.ANOMALY_SET_MISMATCH,
+            f"anomalies are {sorted(normalised.anomalies)}, fixture expects "
+            f"{sorted(expected['expected_anomalies'])}",
+        )
+
+    return errors
+
+
 @pytest.mark.golden
 @pytest.mark.parametrize(
     "expected_path", CASES, ids=lambda p: p.name.removesuffix(".expected.json")
@@ -309,54 +402,105 @@ def test_golden_fixture_is_internally_consistent(expected_path: Path) -> None:
     assert not schema_errors, f"{expected_path.name} violates schema: {schema_errors}"
 
     raw_path = _raw_fixture_path(expected_path)
-    normalised = _normalise_fixture(raw_path)
-    text = normalised.text
+    errors = consistency_errors(
+        expected_path.name,
+        expected,
+        _normalise_fixture(raw_path),
+        raw_path.read_text(encoding="utf-8"),
+    )
+    assert not errors, "\n".join(e.message for e in errors)
 
-    for span in expected["expected_spans"]:
-        start, end, claimed_text = span["start"], span["end"], span["text"]
-        assert 0 <= start < end <= len(text), (
-            f"{expected_path.name}: span [{start}:{end}] out of bounds for "
-            f"normalised text of length {len(text)}"
-        )
-        actual_text = text[start:end]
-        assert actual_text == claimed_text, (
-            f"{expected_path.name}: normalised_text[{start}:{end}] is {actual_text!r}, "
-            f"fixture claims {claimed_text!r}"
+
+#: One case per `Rule`: input that violates it, and the rule it must provoke. Every member
+#: of `Rule` must appear here — `test_every_rule_has_a_failure_proof` asserts the two sets
+#: are equal, so a rule added without a proof fails immediately rather than sitting
+#: unexercised. Exact set equality, not a count: a count has slack, and slack is how a
+#: check ends up never having been watched to fail.
+_BASE_FIXTURE: dict[str, Any] = {
+    "expected_spans": [],
+    "expected_action": "mask",
+    "must_not_appear_in_output": [],
+    "notes": "synthetic, exists only to exercise the checker itself",
+}
+_SPAN = {"detector": "iban", "start": 0, "end": 4, "text": "abcd"}
+
+_FAILURE_PROOFS: list[tuple[Rule, dict[str, Any], str, str]] = [
+    (Rule.SPAN_TEXT_MISMATCH, {"expected_spans": [{**_SPAN, "text": "WRONG"}]}, "abcdefgh", ""),
+    (
+        Rule.SPAN_OUT_OF_BOUNDS,
+        {"expected_spans": [{**_SPAN, "end": 999}]},
+        "short",
+        "",
+    ),
+    (
+        Rule.ALLOW_WITH_SPANS,
+        {"expected_action": "allow", "expected_spans": [_SPAN]},
+        "abcdefgh",
+        "",
+    ),
+    # The trap this rule exists for: a leak assertion over a string the message never
+    # contained passes forever while looking exactly like protection.
+    (Rule.LEAK_STRING_ABSENT, {"must_not_appear_in_output": ["never here"]}, "some text", ""),
+    (Rule.STRIPPED_ABSENT_FROM_SOURCE, {"expected_stripped": ["never here"]}, "text", "raw"),
+    (Rule.STRIPPED_SURVIVED, {"expected_stripped": ["payload"]}, "has payload", "has payload"),
+    (Rule.ANOMALY_SET_MISMATCH, {"expected_anomalies": ["hidden_css:imperative"]}, "text", ""),
+]
+
+
+class TestConsistencyChecksCanFail:
+    """CLAUDE.md invariant 12: watch every rule go red, don't assume it does.
+
+    Without this the corpus checker could quietly degrade into a green light — an inverted
+    comparison, a typo'd field name, a branch that stopped being reachable — and the corpus
+    would go on reporting success while checking nothing. That is precisely the failure it
+    exists to catch in *fixtures*, so it is the one it must not commit itself.
+
+    These proofs were first done by hand in a terminal and then lost with the shell
+    history. Committed now, because a demonstration nobody can re-run is a claim rather
+    than evidence.
+    """
+
+    def _check(self, expected: dict[str, Any], text: str, raw: str) -> set[Rule]:
+        normalised = NormalisedText(text=text, transforms=(), anomalies=())
+        return {
+            e.rule
+            for e in consistency_errors("synthetic", {**_BASE_FIXTURE, **expected}, normalised, raw)
+        }
+
+    def test_a_clean_fixture_produces_no_errors(self) -> None:
+        # Guards the proofs below: if this failed, every one of them could pass for the
+        # wrong reason.
+        assert self._check({}, "any text", "any text") == set()
+
+    @pytest.mark.parametrize(
+        ("rule", "expected", "text", "raw"), _FAILURE_PROOFS, ids=lambda v: getattr(v, "value", "")
+    )
+    def test_rule_fires_on_violating_input(
+        self, rule: Rule, expected: dict[str, Any], text: str, raw: str
+    ) -> None:
+        assert rule in self._check(expected, text, raw), (
+            f"{rule.value} did not fire on input that violates it — the rule is not known "
+            f"to work (CLAUDE.md invariant 12)"
         )
 
-    if expected["expected_action"] == "allow":
-        assert expected["expected_spans"] == [], (
-            f"{expected_path.name}: expected_action is 'allow' but declares spans "
-            f"— an allowed item should have nothing found to allow past"
+    def test_unexpected_extra_anomaly_is_caught(self) -> None:
+        """The half a subset check would miss, and the reason exact matching is required."""
+        normalised = NormalisedText(
+            text="text", transforms=(), anomalies=("hidden_css:imperative",)
         )
+        errors = consistency_errors(
+            "synthetic", {**_BASE_FIXTURE, "expected_anomalies": []}, normalised, ""
+        )
+        assert {e.rule for e in errors} == {Rule.ANOMALY_SET_MISMATCH}
 
-    for leaked in expected["must_not_appear_in_output"]:
-        assert leaked in text, (
-            f"{expected_path.name}: must_not_appear_in_output entry {leaked!r} does not "
-            f"appear anywhere in the raw normalised text — fixture isn't testing a real leak"
-        )
+    def test_every_rule_has_a_failure_proof(self) -> None:
+        """A rule with no proof fails here the moment it is added.
 
-    raw_source = raw_path.read_text(encoding="utf-8")
-    for stripped in expected.get("expected_stripped", []):
-        # Two halves, and both matter. Present in the source: otherwise the fixture claims
-        # to strip something that was never there, and passes forever while testing
-        # nothing. Absent from the normalised text: the actual assertion.
-        assert stripped in raw_source, (
-            f"{expected_path.name}: expected_stripped entry {stripped!r} does not appear "
-            f"in {raw_path.name} at all — the fixture cannot be testing that it is "
-            f"stripped. (Note the check reads raw bytes, so the fixture must not be "
-            f"base64 or quoted-printable encoded.)"
-        )
-        assert stripped not in text, (
-            f"{expected_path.name}: expected_stripped entry {stripped!r} survived into "
-            f"the normalised text — L0 invisible-content stripping did not remove it, so "
-            f"it would reach the model"
-        )
-
-    if "expected_anomalies" in expected:
-        # Exact set, not a subset: a new false positive appearing across the corpus is as
-        # much a behaviour change as a signal that stopped being raised.
-        assert set(normalised.anomalies) == set(expected["expected_anomalies"]), (
-            f"{expected_path.name}: anomalies are {sorted(normalised.anomalies)}, "
-            f"fixture expects {sorted(expected['expected_anomalies'])}"
+        Set equality in both directions: a new `Rule` with no case is unproven, and a case
+        for a rule that no longer exists is a proof that has stopped proving anything.
+        """
+        proven = {rule for rule, _, _, _ in _FAILURE_PROOFS}
+        assert proven == set(Rule), (
+            f"unproven rules: {sorted(r.value for r in set(Rule) - proven)}; "
+            f"stale proofs: {sorted(r.value for r in proven - set(Rule))}"
         )

@@ -128,6 +128,7 @@ from sendashield import ical
 
 __all__ = [
     "INJECTION_SUSPICION_PREFIXES",
+    "collapse_digit_separators",
     "ZERO_WIDTH_CHARS",
     "NormalisationError",
     "NormalisedText",
@@ -344,27 +345,44 @@ def _is_hidden_style(style: str) -> bool:
     return bool(_WHITE_TEXT_RE.search(style)) and not _BACKGROUND_COLOUR_RE.search(style)
 
 
-#: Separators between digit *groups*, removed before scanning content that is about to be
-#: dropped: spaces (including NBSP), hyphens, dots. A grouped card contains no long digit
-#: run — `4242-4242-4242-4242` has a longest run of four — so without this the identifier
-#: scan below sees nothing.
-#:
-#: Hyphens and dots were missing initially, and the consequence was worse here than in the
-#: corpus-hygiene guard that had the same omission: a card hidden as
-#: `<div style="display:none">4242-4242-4242-4242</div>` was stripped correctly but raised
-#: **no anomaly**, and since L0 strips it, L1 never sees it either. The item then reports
-#: nothing found, with nothing recorded anywhere — the one outcome the anomaly exists to
-#: prevent, defeated by the way card numbers are printed on the cards themselves.
-#:
-#: Newlines are deliberately excluded (`[^\S\n]` rather than `\s`): dropped content can span
-#: lines, and a digit ending one line has no relationship to a digit starting the next.
-#:
-#: The sibling of this constant is `_INTER_DIGIT_SEPARATOR_RE` in
-#: `tests/test_golden_corpus.py`, which does the same job for the corpus-hygiene guard.
-#: They are deliberately separate — that one uses `\s` because it scans flat text where a
-#: line break inside a grouped number is plausible — but they share a failure mode, so a
-#: change to the character class in either is a reason to look at the other.
+#: Separators between digit groups, in the two variants anything in this project needs.
+#: Compiled once each rather than branching on a flag at call time.
 _INTER_DIGIT_SEPARATOR_RE = re.compile(r"(?<=\d)(?:[^\S\n]|[-.])+(?=\d)")
+_INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE = re.compile(r"(?<=\d)[\s\-.]+(?=\d)")
+
+
+def collapse_digit_separators(text: str, *, across_lines: bool = False) -> str:
+    """Remove separators sitting between two digits: spaces (incl. NBSP), hyphens, dots.
+
+    A grouped identifier contains no long digit run — `4242-4242-4242-4242` has a longest
+    run of four — so any scan looking for one has to collapse the grouping first, or it
+    sees nothing at all.
+
+    **This is deliberately one function with a flag rather than two near-identical regexes
+    in two modules.** It was two, and both were written handling whitespace only; when the
+    omission was found and fixed in one, the other kept it, because the only thing linking
+    them was a comment naming the sibling. The consequences were a corpus-hygiene guard
+    that let an undeclared real card through if it was written with hyphens, and — worse —
+    an anomaly scan that stayed silent on a card hidden in a `display:none` div, which
+    since L0 strips such content and L1 therefore never sees it, meant no record anywhere
+    that the message contained a card at all. Both bugs were the same missing characters.
+    One definition means the next person cannot fix half of it.
+
+    `across_lines` is the *only* real difference between the two uses, so it is the only
+    thing parameterised:
+
+    - **False** (default), for scanning content being dropped from a message. Newlines are
+      not separators: dropped content spans lines, and a digit ending one line has no
+      relationship to a digit starting the next. Joining them would manufacture
+      identifiers out of unrelated short numbers.
+    - **True**, for the corpus-hygiene guard in `tests/test_golden_corpus.py`, which scans
+      flat text and errs deliberately toward flagging. There, a card wrapped across a line
+      break is a plausible way for real data to enter the corpus, and a false positive
+      costs one declaration line while a false negative is permanent.
+    """
+    pattern = _INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE if across_lines else _INTER_DIGIT_SEPARATOR_RE
+    return pattern.sub("", text)
+
 
 #: Identifier-*shaped*, not identifier-validated: an IBAN-like prefix, or any run of 9+
 #: digits (the shortest thing this project cares about — a 9-digit SSN — sets the floor).
@@ -1052,7 +1070,7 @@ class _HTMLTextExtractor(HTMLParser):
 
     def _scan_dropped(self, data: str, identifier_label: str, imperative_label: str) -> None:
         """Categorise text that is about to be discarded. Labels only, never the text."""
-        if _HIDDEN_IDENTIFIER_RE.search(_INTER_DIGIT_SEPARATOR_RE.sub("", data)):
+        if _HIDDEN_IDENTIFIER_RE.search(collapse_digit_separators(data)):
             self.anomalies.add(identifier_label)
         if _HIDDEN_IMPERATIVE_RE.search(data):
             self.anomalies.add(imperative_label)
