@@ -1,0 +1,9 @@
+{
+  "expected_spans": [],
+  "expected_action": "quarantine",
+  "must_not_appear_in_output": [
+    "Termin Dr. Weber"
+  ],
+  "expected_anomalies": [],
+  "notes": "The third calendar case docs/build-plan.md names, and the purest 'no body' shape in the corpus: SUMMARY only, no LOCATION, no DESCRIPTION, no participants — four of the five coordinate-system slots empty. Deliberately the most ambiguous of the three: 'Onkologie Nachsorge' names a speciality and 'Vorstellungsgespräch bei Siemens' names an employer, but this is just a title and a surname. Nothing regex-detectable is present in any of them (architecture.md §3), which is why they are L3 topic_health rather than an L1 span; this one additionally checks that a single short summary is enough to reach a detector at all rather than being lost as noise"
+}

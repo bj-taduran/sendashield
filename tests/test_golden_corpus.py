@@ -232,6 +232,30 @@ def test_hygiene_guard_sees_through_every_grouping_style(label: str, grouped: st
     )
 
 
+def test_every_raw_fixture_has_an_expected_file() -> None:
+    """An orphan .eml or .ics must fail, not be skipped.
+
+    Discovery globs `*.expected.json`, so a raw fixture added without its expectations file
+    is invisible to every other test in this module — the suite stays green and the fixture
+    is never exercised. That is the Phase 1 test-matrix row ("every `.eml` has an
+    `.expected.json`") and, more to the point, CLAUDE.md invariant 12: a corpus that
+    silently ignores what it cannot check reports success over work not done.
+
+    Checked in the direction discovery does *not* go. The opposite orphan — an
+    `.expected.json` with no raw file — already fails loudly in `_raw_fixture_path`.
+    """
+    orphans = sorted(
+        path.name
+        for suffix in (".eml", ".ics")
+        for path in GOLDEN_DIR.glob(f"*{suffix}")
+        if not path.with_name(f"{path.name.removesuffix(suffix)}.expected.json").exists()
+    )
+    assert not orphans, (
+        f"raw fixture(s) with no .expected.json: {orphans}. They are silently skipped by "
+        f"every other check in this file — add the expectations file or delete the fixture."
+    )
+
+
 def test_golden_corpus_is_discoverable() -> None:
     """Guards the discovery mechanism itself.
 
