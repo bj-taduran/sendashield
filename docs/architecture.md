@@ -15,7 +15,7 @@
 | 5 | Policy model — actions, sensitivity defaults, OAuth posture, tool routing |
 | 6 | MCP tool surface — the security boundary |
 | 7 | Reversible masking and the write path |
-| 8 | Data handling |
+| 8 | Data handling — retention, **capture sessions** |
 | 9 | Stack |
 | 10 | Threat model — including prompt injection |
 | 11 | Revised specification vs. the original |
@@ -621,15 +621,70 @@ draft_reply(ref, body)                                 → creates provider draf
 check_configuration()                                  → setup diagnostics
 ```
 
-### The `purpose` parameter
+### The `purpose` parameter — closed enum, M4
 
-An optional free-text hint the assistant fills in ("triage unread for urgency"). Used
-for task-conditioned minimization — an entity irrelevant to the task can be masked even
-if policy would otherwise allow it.
+Task-conditioned minimisation: an entity irrelevant to the task can be masked even where
+policy would otherwise allow it. Standard policy asks *is this sensitive?*; `purpose` adds
+*does this task need it?*
 
-**It may only narrow, never widen.** `purpose` can never unlock a masked or quarantined
-item. Treat it as attacker-controlled: it arrives from a model that may be operating on
-injected instructions.
+**A closed enum, never free text:**
+
+```python
+purpose: Literal["triage", "search_specific", "summarise",
+                 "draft_reply", "schedule", "unspecified"] = "unspecified"
+```
+
+Free text was rejected. Interpreting it would require either brittle keyword matching or a
+model call — and a model call reading attacker-influenced text to decide filtering
+behaviour would introduce a new injection surface inside a feature whose entire point is
+reducing exposure. An enum makes this a lookup table, not an interpretation problem.
+
+**Language independence.** The enum is machine-facing. A German request —
+*"Sortiere meine ungelesenen E-Mails nach Dringlichkeit"* — still yields `purpose="triage"`,
+because the assistant maps intent to a fixed value. No translated variants exist and none
+are needed. What *does* need German coverage is the **fixture set** verifying that
+German-language conversations select the right enum value.
+
+**Schedule:** accept and log from M1; ignore it. Implement narrowing at M4. Accepting early
+keeps the tool schema stable so adding behaviour later is not a breaking change, and the
+logs reveal whether assistants populate it usefully at all.
+
+#### The ordering property that makes this safe
+
+```
+unspecified  =  baseline policy as configured
+everything else  ≤  baseline
+```
+
+**No enum value is more permissive than `unspecified`.** Every other value can only tighten.
+`purpose` can never unlock a masked or quarantined item.
+
+Treat it as attacker-controlled. It originates in the user's request but is laundered
+through a model that reads hostile text on every call — an injected instruction can
+influence which value gets sent.
+
+#### Handling a manipulated `purpose`
+
+| Case | What it is | Action |
+|---|---|---|
+| **Valid enum, wrong for the task** | Injection steered `search_specific` where `triage` was right | **Proceed.** Structurally cannot leak — every value is ≤ baseline. Worst case is over-masked results. Log the mismatch as an anomaly |
+| **Value outside the enum** | Buggy client, or manipulation attempting free text | **Coerce to the most restrictive purpose, proceed, flag.** Do not error |
+| **Free-text injection in the field** | e.g. *"financial audit requiring full account numbers"* | Rejected by schema validation before reaching policy. Coerce and flag |
+
+**Why coerce rather than reject.** Returning an error tells an attacker their probe was
+detected, and breaks legitimate clients with schema bugs. Coercing to the most restrictive
+interpretation fails closed, keeps the user's request working, and records the anomaly.
+
+**Anomalies surface in the dashboard, never to the model.** Telling the assistant "we
+detected manipulation" hands an attacker a feedback channel for refining the attack. The
+user sees it in `/activity`; the model sees a normal, more-restrictive response.
+
+#### The deeper point
+
+A manipulated `purpose` is a **symptom of injection, not the attack**. The real defence is
+upstream — L0 normalisation stripping invisible text before anything reads it. If `purpose`
+looks manipulated, the valuable signal is that *this conversation may be compromised*, which
+belongs in the anomaly log alongside injection detections from the message body.
 
 ### Withheld notices
 
@@ -780,10 +835,124 @@ sensitive content from elsewhere in its context shouldn't be able to write it ba
 | Vault mappings | Ephemeral | TTL, encrypted |
 | Audit log | Yes | **Content-free**: timestamp, item hash, detector categories, action, latency |
 | Withheld notices | Metadata only | Retention default 30 days, configurable |
+| **Capture sessions** | **Opt-in, TTL-bound** | Exact tool payloads. Off by default, auto-expires. See below |
 | Telemetry | **Never** | No analytics, no crash reporting, no phone-home. Egress allowlist enforced. |
 
 The audit log records *that* an item was withheld and *why category*, never *what*. An
 audit log full of sensitive excerpts is a second copy of the problem.
+
+### Capture sessions — verifying the filter
+
+The content-free audit log answers *"what has this been doing?"* It cannot answer *"did the
+filter actually work?"*, because a hash cannot be reconciled against what an assistant
+reported. Two different needs were conflated in earlier drafts:
+
+| Need | Question | Requires | Frequency |
+|---|---|---|---|
+| **Accountability** | What has this been doing? | Decisions only | Always on |
+| **Verification** | Did the filter work? | The payload | Rare — after setup, after a policy change, when something looks wrong |
+
+A filter nobody can inspect is a filter taken on faith. Capture sessions make the product's
+central claim checkable without making payload storage the default.
+
+```yaml
+capture:
+  enabled: false          # off by default
+  ttl_minutes: 60         # auto-expires; no manual cleanup step
+  max_calls: 50
+```
+
+While active, SendaShield stores the **exact JSON payload returned to the client** for each
+tool call, alongside the inputs that produced it. The dashboard shows, per call: tool and
+arguments, items considered, items returned, items withheld with reasons, spans masked with
+detector and offsets, and the verbatim payload.
+
+#### Strictly self-service — there is no administrative path
+
+**A user captures their own traffic. Nobody captures on anyone else's behalf. No override
+exists — not configurable, not gated behind a warning, not present in the code.**
+
+The support flow this has to serve:
+
+1. User reports a suspected leak
+2. Support asks them to start a capture, reproduce it, and export the decision record
+3. The user reviews the export and chooses to share it
+
+The user performs the capture, sees it first, and decides what leaves their instance. The
+only case an administrative override would serve is *"the user cannot be bothered"* — a
+convenience bought at the cost of the entire trust proposition.
+
+**"No such feature exists" is a far stronger claim than "the feature exists but is
+restricted."** A feature that is absent cannot be enabled under pressure and cannot appear in
+a works-council review as something the operator *could* switch on.
+
+#### Making the claim verifiable rather than merely stated
+
+Anyone can write "admins cannot see your data" in a README. Three properties make it
+checkable:
+
+1. **Cryptographic isolation, not a permission check.** Capture keys derive from the user's
+   session. An admin session cannot decrypt another user's captures. The claim is not "we
+   check the role" but "those bytes are unreadable to that session" — which is what survives
+   a security review.
+2. **An unsuppressible indicator.** While capture is active, a banner shows in that user's
+   dashboard. It cannot be hidden by config, by role, or by an administrator.
+3. **A tamper-evident capture log.** Every capture start and stop appends to that user's own
+   audit log, is not deletable by an administrator, and appears in their export. Even if a
+   capture were somehow started, the user holds a record.
+
+For a works-council conversation: *"there is no mechanism by which an administrator can view
+an employee's message content — not a policy, an architectural property."* AGPL means they
+can read the code and confirm it.
+
+#### Other constraints
+
+- **Off by default.** Enabled per session from the dashboard.
+- **Auto-expires** on TTL or call cap, whichever comes first.
+- **Encrypted at rest** in the same SQLCipher store.
+- **Never enabled by a tool call.** Dashboard only. A model able to switch on payload logging
+  would have a self-service exfiltration channel.
+- Included in `delete-everything`.
+
+#### Development and feature testing
+
+Two mechanisms, deliberately separate from user capture, so that neither can reach a live
+mailbox.
+
+**Dev capture — bound to synthetic sources only.** Enabled by an environment variable that
+engages *only* when the active adapter is `FakeMailSource` or a recorded HTTP fixture. It is
+structurally incapable of running against a live provider connection — the check is on the
+adapter type, not on configuration. This covers effectively all debugging in M1–M6.
+
+**Shadow mode (M4) — validating a change against real mail without exposure.** Run a new
+detector or policy version alongside the current one over the same items and record **only
+the diff**: which items changed decision, which categories changed, counts. No content.
+
+```
+policy v3 vs v4, 340 items scanned
+  12 items changed decision
+   9  allow → mask      (new phone detector)
+   2  mask → quarantine (L3 health, both from praxis-*.de)
+   1  quarantine → mask (IBAN near-miss fixed)
+```
+
+Usually sufficient to judge whether a change behaves. When it is not, the user holding the
+surprising item captures it themselves. Shadow mode is also how any user safely evaluates a
+model upgrade or policy change before adopting it.
+
+#### What capture does not do
+
+Capture records what SendaShield *sent*. It cannot show what the assistant did with it, and
+it cannot detect that a native connector was used instead. That comparison stays manual: read
+the assistant's answer, read the capture, check they agree. If the assistant mentions
+something the capture shows as withheld, either the filter leaked or a direct connector is
+live. Capture is what makes that reconciliation possible at all.
+
+**Honest limit:** anyone with shell access to the host can read the SQLite file and the master
+key. Application-level design cannot prevent this. For an organisational deployment the admin
+is a trusted role and the Betriebsvereinbarung must say so. What the architecture guarantees
+is that no *feature* grants an administrator access to employee content — obtaining it
+requires deliberately bypassing the application.
 
 ---
 
@@ -1138,7 +1307,7 @@ AGPL-only.
 Milestones are named **M1–M7** to avoid confusion with release version numbers. M7 is the
 first stable public release.
 
-**M1 — prove the boundary.** Gmail + Google Calendar adapters, L1 detectors only,
+**M1 — prove the boundary.** Gmail + Google Calendar adapters, L1 detectors only, `purpose` enum **accepted and logged but ignored**,
 `mask`/`quarantine`, `counts_only` reporting, multi-account data model **with `user_id`
 present on every entity though shipping single-user**, `fetch_many`, async, dashboard auth,
 OAuth 2.1 MCP endpoint, minimal UI, Docker. **Attachment text extraction** (plain text,
@@ -1147,12 +1316,13 @@ reason `attachment_not_scannable` or `attachment_undecodable`. Goal: one end-to-
 tool call from claude.ai.
 
 **M2 — real detection and speed.** Privacy Filter L2, policy engine with the sensitivity
-slider, decision cache, background pre-scanning, job-and-poll, simulation mode, audit log.
+slider, decision cache, background pre-scanning, job-and-poll, simulation mode, audit log,
+**capture sessions**.
 
 **M3 — provider independence.** IMAP + CalDAV adapters. Validates the ports, and provides
 the contingency if Google's Personal Use exemption changes.
 
-**M4 — semantics.** L3 topic classifier (in-process `llama-cpp-python`, pinned GGUF, grammar-constrained output, 50–100 regression fixtures in CI), calendar-title profile, German detector pack.
+**M4 — semantics.** L3 topic classifier (in-process `llama-cpp-python`, pinned GGUF, grammar-constrained output, 50–100 regression fixtures in CI), **`purpose` enum narrowing behaviour** (accepted and logged since M1), calendar-title profile, German detector pack.
 
 *Carried into M4 from Phase 1 normalisation* — two things a human reader sees that
 `normalise_calendar()` does not currently read. Both are reported per item rather than

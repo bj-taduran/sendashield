@@ -412,6 +412,16 @@ they do not constrain it. Disconnecting the direct connector remains the real co
 
 ## Step 8 — Verify it works
 
+### Turn on a capture session first
+
+Open `https://your-sendashield-url/capture` and start a session. For the next hour,
+SendaShield records the **exact data it sends to your assistant** so you can check it
+yourself.
+
+Capture is off by default and expires automatically. Nothing records unless you ask it to,
+your assistant cannot switch it on, and captures are deleted when the session ends.
+
+
 In a new conversation:
 
 ```
@@ -427,7 +437,7 @@ Review my unread email from the past 24 hours. Classify each as urgent,
 informational, or ignore.
 ```
 
-Compare against `https://your-sendashield-url/activity`, which shows exactly what was sent to
+Compare against `https://your-sendashield-url/capture`, which shows the exact payload sent to
 the model on that call. **The two should match.** If the assistant mentions something the
 activity log says was withheld, stop and open an issue — that is a bug worth reporting
 immediately.
@@ -464,6 +474,11 @@ revokes Gmail access.
 
 **Nothing is being withheld.** Verify with a test email to yourself containing a
 [test credit card number](https://docs.stripe.com/testing) — SendaShield should mask it.
+
+**I think something leaked.** Start a capture session, reproduce it, and check the recorded
+payload. If a sensitive value appears there, it is a filter bug — please report it (see
+`SECURITY.md`). If it does not, your assistant read the message through a different
+connector; check Step 7.
 
 ---
 

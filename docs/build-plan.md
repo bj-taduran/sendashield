@@ -286,11 +286,23 @@ column is what breaks in production if you skip it.
 | 6 | Scripted OAuth 2.1 + PKCE flow | A connector that can't actually connect |
 | 6 (M6) | **Cross-user isolation matrix** — every tool, every ref, called as user B with user A's identifiers | A leak between users inside a privacy product. The worst possible failure |
 | 6 (M6) | Admin-cannot-read tests — assert admin role is refused on every data endpoint | Admin privilege quietly becoming data access |
-| 7 | **Activity-log reconciliation** — what the assistant said vs. what was sent | The bypass, and any real leak. The only test that exercises the whole claim |
+| 6 (M2) | **Capture default-off test** — assert no payload is stored unless a session is explicitly active | Payload logging becoming the silent default |
+| 6 (M2) | **Capture cannot be tool-enabled** — assert every MCP tool path is incapable of starting a capture session | A model switching on its own exfiltration channel |
+| 6 (M2) | Capture expiry — TTL and call cap both enforced; expired captures unreadable and deleted | Payloads outliving the debugging session that justified them |
+| 6 (M2) | Capture in `delete-everything` | Payloads surviving a wipe |
+| 6 (M2) | **No-admin-path test** — assert no route, role, or config value can start or read a capture for another user; assert an admin session cannot decrypt another user's capture | The feature most likely to erode under support pressure |
+| 6 (M2) | Capture indicator is unsuppressible — assert no config or role hides the active banner | Silent capture |
+| 6 (M2) | Capture start/stop appends to the user's audit log and is not deletable by an admin | Tamper-evident record defeated |
+| 6 (M2) | **Dev capture refuses live adapters** — assert it engages only for `FakeMailSource` / recorded fixtures | A debug switch reaching real mail |
+| 4 (M4) | Shadow mode emits diffs only — assert no message content appears in shadow output | Content leaking through a comparison feature |
+| 7 | **Activity-log reconciliation** — what the assistant said vs. what was sent, using a capture session | The bypass, and any real leak. The only test that exercises the whole claim |
 | 7 | Performance smoke: 50 messages within the wall-clock budget | Timeouts that return nothing to the user |
 | 4 (M4) | **L3 regression fixtures** — 50–100 whole messages, DE and EN, expected topic, no spans | Silent accuracy loss; makes model upgrades reviewable instead of a leap of faith |
 | 4 (M4) | L3 malformed-output tests — mock the model returning prose, invalid JSON, out-of-range confidence, timeout | Lenient parsing failing *open* |
 | 4 (M4) | L3 injection fixtures — messages containing "ignore previous instructions", fake JSON, delimiter-escape attempts | Verify the worst case is spurious quarantine, never de-escalation |
+| 4 (M4) | **`purpose` ordering test** — for every enum value, assert the result is never more permissive than `unspecified` on the same item | The one property that makes a manipulated `purpose` harmless |
+| 4 (M4) | `purpose` coercion tests — out-of-enum values, nulls, free-text injection strings | Errors leaking probe confirmation; lenient handling failing open |
+| 4 (M4) | **German enum-selection fixtures** — German-language requests mapped to expected enum values | Enum selection silently degrading for non-English conversations |
 | all | Snapshot/regression on detection output | Unintended behaviour drift when refactoring |
 
 **Run on every commit:** everything except `slow` and manual. `pytest -m leak` in a

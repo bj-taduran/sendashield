@@ -37,8 +37,15 @@ user asked for it. Say so and stop.
 9. **Admin is not data access.** An admin may operate the instance — add users, set base
    policy, run backups. An admin may never read another user's messages, withheld items, or
    activity. Any debug access must be granted by that user, expire, and appear in their own
-   activity log.
-10. **L3 is a classifier, not an agent.** No tools, no conversation history, no multi-turn,
+   activity log. See `docs/architecture.md` §13 for the role table this summarises.
+10. **Capture is self-service only.** Payload capture is dashboard-only, off by default,
+    TTL-bound. A model must never be able to enable it — that is a self-service exfiltration
+    channel. **There is no administrative path to capture another user's traffic. Do not add
+    one, under any framing** — not "admin debug mode", not "support override", not a config
+    flag. Capture keys derive from the user's session, so isolation is cryptographic rather
+    than a permission check. Dev capture engages only when the adapter is `FakeMailSource` or
+    a recorded fixture; it must be structurally incapable of running against a live provider.
+11. **L3 is a classifier, not an agent.** No tools, no conversation history, no multi-turn,
     no access to other items. Temperature 0, grammar-constrained JSON, strict schema
     validation. Parse failure or timeout → quarantine, with **no lenient retry**. Its input
     is attacker-controlled text; it is the least privileged component in the system.

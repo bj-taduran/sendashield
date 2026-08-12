@@ -231,17 +231,50 @@ my approval."*
 - Multi-account, multi-provider, in one instance
 - **Simulation mode** — scan the last N days and see what *would* be filtered, before any
   assistant is connected. Trust is driven by verifiable consistency more than raw accuracy.
+- **Capture sessions** — opt-in, TTL-bound recording of the exact JSON payloads sent to the
+  assistant. The content-free audit log answers *"what has this been doing?"*; capture answers
+  *"did the filter actually work?"*. Off by default, never enablable by a tool call.
+  **Strictly self-service: there is no administrative path, by design.** A user captures their
+  own traffic, reviews it, and decides what to share — which is the entire support flow. Keys
+  derive from the user's session, so isolation is cryptographic rather than a permission check;
+  an active capture shows an unsuppressible banner; start/stop is written to the user's own
+  tamper-evident log. *"No such feature exists"* is a far stronger claim than *"the feature
+  exists but is restricted"* — and it is what makes a §87 BetrVG works-council conversation
+  straightforward.
+- **Dev capture and shadow mode** — feature testing without touching real mail. Dev capture
+  engages only against `FakeMailSource` or recorded fixtures, structurally unable to run on a
+  live connection. Shadow mode (M4) runs a new policy or model version alongside the current
+  one and records **only the diff** — which items changed decision and how — with no content.
+  Also how any user safely evaluates an upgrade before adopting it.
 - Withheld-items dashboard, content-free audit log, activity view
 - Reversible masking with local vault; approval queue for calendar writes
 - Background pre-scanning and decision cache
 - Prompt-injection normalisation and defanging
 
-### The `purpose` parameter
+### The `purpose` parameter — closed enum, M4
 
-An optional hint the assistant fills in ("triage unread for urgency") enabling
-task-conditioned minimisation. **It may only narrow, never widen** — it can never unlock a
-masked or quarantined item, and must be treated as attacker-controlled since it arrives
-from a model that may be operating on injected instructions.
+`Literal["triage","search_specific","summarise","draft_reply","schedule","unspecified"]`.
+Task-conditioned minimisation: policy asks *is this sensitive?*, `purpose` adds *does this
+task need it?*
+
+**Free text was rejected.** Interpreting it needs either brittle keyword matching or a model
+call — and a model reading attacker-influenced text to decide filtering behaviour would add
+an injection surface inside a feature meant to reduce exposure. An enum is a lookup table.
+
+**Language independent.** A German request still yields `purpose="triage"`; the assistant
+maps intent to a fixed machine value. German coverage is needed in the *fixtures*, not the
+enum.
+
+**The safety property:** `unspecified` is the baseline, and **no value is more permissive
+than baseline**. Every other value only tightens. A manipulated `purpose` can therefore only
+over-restrict — never unlock.
+
+**Handling manipulation:** valid-but-wrong value → proceed and log the anomaly (cannot leak).
+Out-of-enum value → coerce to the most restrictive purpose, proceed, flag. Never error —
+that confirms the probe to an attacker and breaks buggy clients. **Anomalies surface in the
+dashboard, never to the model**, which would hand an attacker a feedback channel.
+
+Accepted and logged from M1, narrowing implemented at M4, so the tool schema never breaks.
 
 ### L3 — a classifier, never an agent
 
@@ -360,6 +393,7 @@ A typosquat reached #1 trending on Hugging Face in 2026 before takedown.
 | Decision cache | Hash + verdict only | SHA-256 of content — not reconstructable |
 | Audit log | **Content-free** | Timestamp, item hash, category, action. 6-month retention |
 | Withheld notices | Metadata only | 30-day default, adjustable |
+| **Capture sessions** | **Opt-in, TTL-bound** | Exact tool payloads for verification. Off by default, auto-expires, dashboard-only |
 | Telemetry | **Never** | No analytics, no crash reporting, no version checks. Egress allowlist enforced |
 
 Delete-everything button with **typed confirmation** (`DELETE`), since it is irreversible.
