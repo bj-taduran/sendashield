@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/SendaShield_Logo_v0.png" alt="SendaShield — open-source sensitive data protection" width="480">
+</p>
+
 # SendaShield
 
 **Sen**sitive **Da**ta **Shield** — a self-hosted privacy filter that sits between your AI
