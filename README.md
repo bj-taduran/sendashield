@@ -108,4 +108,3 @@ This is orientation, not legal advice.
 ## Security
 
 Please report vulnerabilities privately. See `SECURITY.md`.
-x=1
