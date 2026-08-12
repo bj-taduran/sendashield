@@ -1,0 +1,15 @@
+From: statements@buchhandlung-nord.example
+To: kunde@example.com
+Subject: Ihre Bestellung ist unterwegs
+Date: Fri, 14 Aug 2026 07:30:00 +0200
+Message-ID: <benign_hidden_preheader_text@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><body>
+<div style="display:none">Ihre Bestellung ist unterwegs - voraussichtliche Lieferung am Montag</div>
+<p>Guten Tag,</p>
+<p>Ihre Bestellung wurde heute versandt und erreicht Sie voraussichtlich am Montag.</p>
+<p>Vielen Dank fuer Ihren Einkauf!</p>
+</body></html>

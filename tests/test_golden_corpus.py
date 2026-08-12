@@ -257,7 +257,8 @@ def test_golden_fixture_is_internally_consistent(expected_path: Path) -> None:
     assert not schema_errors, f"{expected_path.name} violates schema: {schema_errors}"
 
     raw_path = _raw_fixture_path(expected_path)
-    text = _normalise_fixture(raw_path).text
+    normalised = _normalise_fixture(raw_path)
+    text = normalised.text
 
     for span in expected["expected_spans"]:
         start, end, claimed_text = span["start"], span["end"], span["text"]
@@ -281,4 +282,29 @@ def test_golden_fixture_is_internally_consistent(expected_path: Path) -> None:
         assert leaked in text, (
             f"{expected_path.name}: must_not_appear_in_output entry {leaked!r} does not "
             f"appear anywhere in the raw normalised text — fixture isn't testing a real leak"
+        )
+
+    raw_source = raw_path.read_text(encoding="utf-8")
+    for stripped in expected.get("expected_stripped", []):
+        # Two halves, and both matter. Present in the source: otherwise the fixture claims
+        # to strip something that was never there, and passes forever while testing
+        # nothing. Absent from the normalised text: the actual assertion.
+        assert stripped in raw_source, (
+            f"{expected_path.name}: expected_stripped entry {stripped!r} does not appear "
+            f"in {raw_path.name} at all — the fixture cannot be testing that it is "
+            f"stripped. (Note the check reads raw bytes, so the fixture must not be "
+            f"base64 or quoted-printable encoded.)"
+        )
+        assert stripped not in text, (
+            f"{expected_path.name}: expected_stripped entry {stripped!r} survived into "
+            f"the normalised text — L0 invisible-content stripping did not remove it, so "
+            f"it would reach the model"
+        )
+
+    if "expected_anomalies" in expected:
+        # Exact set, not a subset: a new false positive appearing across the corpus is as
+        # much a behaviour change as a signal that stopped being raised.
+        assert set(normalised.anomalies) == set(expected["expected_anomalies"]), (
+            f"{expected_path.name}: anomalies are {sorted(normalised.anomalies)}, "
+            f"fixture expects {sorted(expected['expected_anomalies'])}"
         )

@@ -42,6 +42,27 @@ offset. This already happened once — adding the two slots moved
 `cal_iban_in_description`'s span from 51 to 55 — which is the churn freezing the order
 prevents from recurring.
 
+## Injection fixtures assert the opposite of a leak fixture
+
+A leak fixture says *this string is in the message and must not survive filtering*. An
+injection fixture says *this string is in the message and L0 already removed it*, which
+needs different fields:
+
+| Field | Means | Integrity rule |
+|---|---|---|
+| `must_not_appear_in_output` | Present in normalised text; must not survive into output | Entry **must appear** in the normalised text |
+| `expected_stripped` | Removed by L0; never reaches the normalised text at all | Entry **must appear in the raw file** and **must not appear** in the normalised text |
+| `expected_anomalies` | Exact set of `NormalisedText.anomalies` | Exact match, not subset |
+
+The two integrity rules are mirror images of each other and exist for the same reason: an
+assertion about a string the message never contained passes forever while testing nothing.
+Requiring presence in the source makes both falsifiable.
+
+Because `expected_stripped` reads the raw file, a fixture using it **must not be base64 or
+quoted-printable encoded**. `expected_anomalies` is an exact set because a new false
+positive appearing across the corpus is as much a behaviour change as a signal that
+quietly stopped being raised.
+
 **A `.ics` fixture must contain exactly one `VEVENT`.** `normalise_calendar()` returns one
 item per event by design (a calendar file is a container, not a document — two events may
 warrant entirely different policy, and concatenating them would let one event's decision

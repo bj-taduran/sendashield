@@ -80,13 +80,25 @@ completeness:
   acceptable only because the drop is never silent. The transform records that comments
   existed, and `NormalisedText.anomalies` records when a dropped comment contained something
   identifier-shaped or imperative (Control 3). A payload does not get to vanish quietly.
-- `invisible_stripped:hidden_css` — **not implemented**. `display:none`, `font-size:0`,
-  white-on-white. Hidden text is currently *extracted like any other text* (verified, not
-  assumed — see `tests/test_normalise.py::TestHtmlToText`). That is the safe direction for
-  L1 (a detector sees it and can mask it) but it is not the control §10 describes, and it
-  leaves the §10 example payload — a `font-size:0px` div of instructions — sitting in the
-  text as ordinary content. Closing this is a prerequisite for the injection-payload fixture
-  batch, not for this one.
+- `invisible_stripped:hidden_css` — **implemented**. `display:none`, `visibility:hidden`,
+  `opacity:0`, `font-size:0`, and white text with no background of its own. The whole
+  element subtree is removed, not just its immediate text, and the removed text is scanned
+  for the same two categories before it goes.
+
+  Hidden text used to be *extracted* here, on the reasoning that a detector could then mask
+  it. That was wrong, and the correction is worth recording: §5 builds the filtered body by
+  replacing spans **in the normalised text**, so text stripped at L0 never reaches the model
+  at all. Stripping is therefore strictly safer than extracting — it does not depend on a
+  detector recognising the payload, and it works against injection text no detector would
+  match. §6 says as much outright: "the real defence is upstream — L0 normalisation
+  stripping invisible text before anything reads it."
+
+  Two limits, and they fail in **opposite** directions — see `_is_hidden_style`, which
+  spells both out. Inline `style` only, so text hidden by a `<style>`-block rule still
+  reaches the model (errs toward **exposure**, logged as a known gap at M5). White text
+  judged without the cascade, so a light-on-dark design has visible text stripped (errs
+  toward **removal**, a utility loss). "We only handle inline styles, so we under-strip" is
+  the wrong summary: one limit under-strips, the other over-strips.
 
 **Deliberately out of scope here** (tracked, not forgotten):
 
@@ -251,15 +263,97 @@ _KNOWN_CTES = frozenset({"7bit", "8bit", "binary", "quoted-printable", "base64"}
 _HEADER_SCAN_LIMIT = 64 * 1024
 
 
-#: Whitespace between two digits, removed before scanning a dropped comment. People group
-#: identifiers (`4242 4242 4242 4242`), and a grouped card contains no long digit run.
+#: HTML elements that never have content, so they never open a region to skip.
+_VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+#: Inline-style declarations that render an element invisible to a human reader. Matched
+#: against the element's own `style` attribute; see `_is_hidden_style` for what this does
+#: and does not cover.
+#:
+#: `docs/architecture.md` §10 Control 1 names `font-size:0`, `display:none` and
+#: background-matched text; `visibility:hidden` and `opacity:0` are the same technique with
+#: a different property, and the §10 example payload combines two of them:
+#:
+#:     <div style="color:#ffffff;font-size:0px">Ignore prior instructions...</div>
+_HIDDEN_STYLE_PATTERNS = (
+    re.compile(r"display\s*:\s*none", re.IGNORECASE),
+    re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE),
+    re.compile(r"opacity\s*:\s*0(?:\.0+)?\s*(?:;|$)", re.IGNORECASE),
+    # 0 with or without a unit: 0, 0px, 0pt, 0em, 0%, 0.0px. A bare `0` is valid CSS.
+    re.compile(
+        r"font-size\s*:\s*0*\.?0+\s*(?:px|pt|em|rem|%|ex|ch|vw|vh)?\s*(?:;|$)", re.IGNORECASE
+    ),
+)
+
+#: White text. Only counts as hidden when the same element declares no `background-color` —
+#: see `_is_hidden_style` for why this is deliberately shallow.
+_WHITE_TEXT_RE = re.compile(
+    r"(?<!-)color\s*:\s*(?:#fff(?:fff)?\b|white\b|rgba?\(\s*255\s*,\s*255\s*,\s*255\s*[,)])",
+    re.IGNORECASE,
+)
+_BACKGROUND_COLOUR_RE = re.compile(r"background(?:-color)?\s*:", re.IGNORECASE)
+
+
+def _is_hidden_style(style: str) -> bool:
+    """Whether an inline `style` attribute makes its element invisible to a human reader.
+
+    Two known limits. They are not equivalent, and the difference is the important part:
+    **they fail in opposite directions**, so neither can be reasoned about using the other's
+    intuition.
+
+    **Inline styles only — this one errs toward EXPOSURE.** A rule in a `<style>` block
+    (`.preheader { display:none }`) is not seen, so text hidden that way is treated as
+    ordinary visible content and reaches the model intact. That is the same outcome as
+    having no stripping at all for that payload: a real gap, not a conservative choice.
+    It is accepted for now because resolving it means selector matching and the cascade —
+    a CSS engine parsing attacker-controlled input inside the security boundary, which is a
+    larger attack surface than the thing it would defend — and because real payloads
+    overwhelmingly use inline style, including the one `docs/architecture.md` §10 documents.
+    Logged as a known gap at M5, not pretended away.
+
+    **White text is judged shallowly — this one errs toward REMOVAL.** `color:#ffffff`
+    counts as hidden only when the same element declares no background of its own. That
+    gets white-on-white right and white-on-explicitly-dark right, and gets
+    white-on-*inherited*-dark wrong: a light-on-dark design has visible text stripped. The
+    user then sees less than the message contained, but nothing reaches the model that
+    shouldn't — a utility loss, not an exposure. Computing the true effective background
+    needs the cascade, and see above.
+
+    Stated plainly because the safe-looking summary — "we only handle inline styles, so we
+    under-strip" — is wrong about which way each limit cuts.
+    """
+    if any(pattern.search(style) for pattern in _HIDDEN_STYLE_PATTERNS):
+        return True
+    return bool(_WHITE_TEXT_RE.search(style)) and not _BACKGROUND_COLOUR_RE.search(style)
+
+
+#: Whitespace between two digits, removed before scanning content that is about to be
+#: dropped. People group identifiers (`4242 4242 4242 4242`), and a grouped card contains
+#: no long digit run.
 _INTER_DIGIT_SPACE_RE = re.compile(r"(?<=\d)[^\S\n]+(?=\d)")
 
 #: Identifier-*shaped*, not identifier-validated: an IBAN-like prefix, or any run of 9+
 #: digits (the shortest thing this project cares about — a 9-digit SSN — sets the floor).
 #: No checksum is applied and none should be; this runs on text that has already been
 #: dropped, so its only job is to decide whether the drop deserves to be mentioned.
-_COMMENT_IDENTIFIER_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z0-9]{10,}|\d{9,}", re.IGNORECASE)
+_HIDDEN_IDENTIFIER_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z0-9]{10,}|\d{9,}", re.IGNORECASE)
 
 #: AI-directed imperatives, per `docs/architecture.md` §10 Control 3 ("ignore previous
 #: instructions", "you are now", "do not mention", references to tools or system prompts).
@@ -267,7 +361,7 @@ _COMMENT_IDENTIFIER_RE = re.compile(r"[A-Z]{2}\d{2}[A-Z0-9]{10,}|\d{9,}", re.IGN
 #: arms race" and "nothing like checksum-validating a card number". It exists here to stop
 #: a payload disappearing without a trace, not to catch every payload; the real injection
 #: detector is a separate component and is not this function's job.
-_COMMENT_IMPERATIVE_RE = re.compile(
+_HIDDEN_IMPERATIVE_RE = re.compile(
     r"""
       (?:ignore|disregard|forget)\s+(?:\w+\s+){0,3}(?:instruction|prompt|rule|prior|previous|above)
     | you\s+are\s+now
@@ -283,6 +377,8 @@ _COMMENT_IMPERATIVE_RE = re.compile(
 #: colliding or needing a new field.
 _ANOMALY_COMMENT_IDENTIFIER = "html_comment:identifier_shaped"
 _ANOMALY_COMMENT_IMPERATIVE = "html_comment:imperative"
+_ANOMALY_HIDDEN_CSS_IDENTIFIER = "hidden_css:identifier_shaped"
+_ANOMALY_HIDDEN_CSS_IMPERATIVE = "hidden_css:imperative"
 
 #: Anomalies that are weak evidence of **deliberate construction**, as opposed to ordinary
 #: malformation or a quirk of some mail client. They share a register and should be read
@@ -298,11 +394,33 @@ _ANOMALY_COMMENT_IMPERATIVE = "html_comment:imperative"
 #: applies in reverse: nothing here may downgrade an L1 result, and equally, the absence of
 #: any of them is not evidence of safety.
 #:
-#: Deliberately excluded: `html_comment:identifier_shaped` (a card number in a comment is
-#: usually a template artefact, so it is a hidden-content signal rather than a construction
-#: one) and `ical_event_without_text` (an untitled busy block is ordinary).
+#: Deliberately excluded: `html_comment:identifier_shaped` and
+#: `hidden_css:identifier_shaped` (a card number in a comment is usually a template
+#: artefact, and `display:none` preheader text is in almost every marketing email ever
+#: sent — both are hidden-content signals rather than construction ones) and
+#: `ical_event_without_text` (an untitled busy block is ordinary). Note it is the
+#: *imperative*, not the hiding, that makes a hidden span suspicious: hiding text is
+#: ubiquitous and boring, hiding instructions addressed to a model is not.
+#:
+#: **Why a hidden identifier gets no register of its own.** It was considered — it is not
+#: injection, but "there was a card number in text nobody can see" is not ordinary
+#: marketing either. Two reasons against, both about where the judgement belongs. First,
+#: the thing that would make it interesting is *checksum validity*, and this module
+#: deliberately validates nothing (see `_HIDDEN_IDENTIFIER_RE`); a preheader reading
+#: "Order #100294771 confirmed" is identifier-shaped and entirely innocent, and telling
+#: those apart is L1's job. Second, a third register would have to earn its keep by
+#: changing some decision, and there is no decision to change: the identifier was stripped,
+#: so nothing leaks whether it was a real card or an order number.
+#:
+#: What *is* worth knowing, and is easy to miss: because L0 strips it, **L1 never sees that
+#: identifier at all**. No span is produced, no category is recorded, and an item can be
+#: reported as "nothing found" while the message did contain a hidden card. The
+#: `hidden_css:identifier_shaped` anomaly is the only record that it existed, which is
+#: reason enough to keep raising it — as a plain anomaly, in the user's dashboard, not as
+#: evidence of an attack.
 INJECTION_SUSPICION_PREFIXES = (
     "html_comment:imperative",
+    "hidden_css:imperative",
     "ical_duplicate_property",
 )
 
@@ -429,7 +547,16 @@ def normalise(raw_message: bytes) -> NormalisedText:
             # notable inside it is raised as an anomaly. See the module docstring's L0
             # section.
             transforms.append("invisible_stripped:html_comment")
-            anomalies.extend(extraction.anomalies)
+        if extraction.stripped_hidden_css:
+            transforms.append("invisible_stripped:hidden_css")
+        if extraction.unclosed_hidden_element:
+            # The hidden element never closed, so its text was given back to the visible
+            # output rather than swallowing the rest of the document. Recorded as a defect
+            # because the markup was malformed and the output is consequently *more* than
+            # the reader would see — the pipeline should treat that as a reason to distrust
+            # the item, per invariant 2. See `_HTMLTextExtractor.close_and_recover`.
+            defects = (*defects, "UnclosedHiddenElement")
+        anomalies.extend(extraction.anomalies)
 
     # Order matches the module docstring (strip, then NFC-normalise) even though the two
     # don't currently interact: none of ZERO_WIDTH_CHARS participates in NFC's canonical
@@ -824,20 +951,32 @@ class _HtmlExtraction:
 
     text: str
     dropped_comments: bool
+    stripped_hidden_css: bool
+    unclosed_hidden_element: bool
     anomalies: tuple[str, ...]
+
+
+def _is_hidden_attrs(attrs: list[tuple[str, str | None]]) -> bool:
+    """Whether an element's attributes make it invisible. Inline `style` only."""
+    return any(
+        name.lower() == "style" and value is not None and _is_hidden_style(value)
+        for name, value in attrs
+    )
 
 
 def _html_to_text(html: str) -> _HtmlExtraction:
     extractor = _HTMLTextExtractor()
     extractor.feed(_strip_raw_text_blocks(html))
-    extractor.close()
+    extractor.close_and_recover()
     return _HtmlExtraction(
         text=extractor.get_text(),
         dropped_comments=extractor.dropped_comments,
+        stripped_hidden_css=extractor.stripped_hidden_css,
+        unclosed_hidden_element=extractor.unclosed_hidden_element,
         # Sorted, not insertion-ordered: two messages differing only in which comment came
         # first must not produce different output. `normalise()` is asserted deterministic
         # in tests/test_normalise.py and this is a tuple compared by that assertion.
-        anomalies=tuple(sorted(extractor.comment_anomalies)),
+        anomalies=tuple(sorted(extractor.anomalies)),
     )
 
 
@@ -863,8 +1002,21 @@ class _HTMLTextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._chunks: list[str] = []
         self._first_cell_in_row = True
+        #: Names of currently-open non-void elements. Only needed to know when a hidden
+        #: element has closed; ordinary extraction is flat.
+        self._open_elements: list[str] = []
+        #: Depth of `_open_elements` at which the innermost hidden element began, or None.
+        #: Set once and not incremented for nested hidden elements — the region ends when
+        #: the outermost one closes.
+        self._hidden_from_depth: int | None = None
+        #: Text seen while inside a hidden element. Buffered rather than discarded outright
+        #: so it can be given back if the element turns out never to close — see
+        #: `close_and_recover`.
+        self._hidden_buffer: list[str] = []
         self.dropped_comments = False
-        self.comment_anomalies: set[str] = set()
+        self.stripped_hidden_css = False
+        self.unclosed_hidden_element = False
+        self.anomalies: set[str] = set()
 
     def handle_comment(self, data: str) -> None:
         """Drop the comment, but not without looking at what was dropped.
@@ -879,16 +1031,87 @@ class _HTMLTextExtractor(HTMLParser):
         `NormalisedText.anomalies`.
         """
         self.dropped_comments = True
-        if _COMMENT_IDENTIFIER_RE.search(_INTER_DIGIT_SPACE_RE.sub("", data)):
-            self.comment_anomalies.add(_ANOMALY_COMMENT_IDENTIFIER)
-        if _COMMENT_IMPERATIVE_RE.search(data):
-            self.comment_anomalies.add(_ANOMALY_COMMENT_IMPERATIVE)
+        self._scan_dropped(data, _ANOMALY_COMMENT_IDENTIFIER, _ANOMALY_COMMENT_IMPERATIVE)
+
+    def _scan_dropped(self, data: str, identifier_label: str, imperative_label: str) -> None:
+        """Categorise text that is about to be discarded. Labels only, never the text."""
+        if _HIDDEN_IDENTIFIER_RE.search(_INTER_DIGIT_SPACE_RE.sub("", data)):
+            self.anomalies.add(identifier_label)
+        if _HIDDEN_IMPERATIVE_RE.search(data):
+            self.anomalies.add(imperative_label)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._open(tag)
+        if tag not in _VOID_TAGS:
+            self._open_elements.append(tag)
+            if self._hidden_from_depth is None and _is_hidden_attrs(attrs):
+                # Entering a hidden region. Depth is recorded *after* the push, so the
+                # region ends when this element's own close tag pops it back.
+                self._hidden_from_depth = len(self._open_elements)
+                self.stripped_hidden_css = True
+                return
+        if self._hidden_from_depth is None:
+            self._open(tag)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._open(tag)
+        # `<div/>` opens and closes at once, so it can never contain anything to hide.
+        if self._hidden_from_depth is None:
+            self._open(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID_TAGS or not self._open_elements:
+            return
+        # Tolerate mismatched nesting: unwind to the nearest matching open tag if there is
+        # one, and ignore a stray close tag entirely if there is not. Neither may leave the
+        # stack in a state that keeps a hidden region open forever.
+        if tag not in self._open_elements:
+            return
+        while self._open_elements:
+            popped = self._open_elements.pop()
+            if self._hidden_from_depth is not None and len(self._open_elements) < (
+                self._hidden_from_depth
+            ):
+                self._end_hidden_region()
+            if popped == tag:
+                break
+
+    def _end_hidden_region(self) -> None:
+        """Discard the buffered hidden text, after recording what was in it."""
+        self._scan_dropped(
+            "".join(self._hidden_buffer),
+            _ANOMALY_HIDDEN_CSS_IDENTIFIER,
+            _ANOMALY_HIDDEN_CSS_IMPERATIVE,
+        )
+        self._hidden_buffer.clear()
+        self._hidden_from_depth = None
+
+    def close_and_recover(self) -> None:
+        """Finish parsing, giving back the text of any hidden element that never closed.
+
+        This is the whole reason hidden text is buffered rather than dropped as it arrives.
+        A skip region that runs to end-of-input is the exact failure `_strip_raw_text_blocks`
+        was written to eliminate for `<style>`: one unclosed tag silently swallows the
+        entire remainder of the document, which reads downstream as "nothing here" rather
+        than "something went wrong". Reintroducing it for `<div style="display:none">` would
+        be the same bug in a new place — and a far easier one to trigger deliberately, since
+        an attacker controls the markup and would only need to omit a closing tag to make
+        every following identifier vanish from detection.
+
+        So the failure direction is inverted: an unterminated hidden element gives its text
+        *back* to the visible output and records a defect. Text that should have been
+        stripped is then over-included, which is the survivable error — the payload stays
+        visible to every downstream layer instead of the message quietly emptying out.
+        """
+        self.close()
+        if self._hidden_from_depth is not None:
+            self.unclosed_hidden_element = True
+            self._scan_dropped(
+                "".join(self._hidden_buffer),
+                _ANOMALY_HIDDEN_CSS_IDENTIFIER,
+                _ANOMALY_HIDDEN_CSS_IMPERATIVE,
+            )
+            self._chunks.extend(self._hidden_buffer)
+            self._hidden_buffer.clear()
+            self._hidden_from_depth = None
 
     def _open(self, tag: str) -> None:
         if tag == "tr":
@@ -902,7 +1125,10 @@ class _HTMLTextExtractor(HTMLParser):
             self._chunks.append("\n")
 
     def handle_data(self, data: str) -> None:
-        self._chunks.append(data)
+        if self._hidden_from_depth is not None:
+            self._hidden_buffer.append(data)
+        else:
+            self._chunks.append(data)
 
     def get_text(self) -> str:
         text = "".join(self._chunks)

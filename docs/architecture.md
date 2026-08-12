@@ -1337,6 +1337,20 @@ remembered:
 **M5 — write path and injection.** Gmail native drafts with rehydration, egress scanning,
 prompt-injection normalisation and defanging.
 
+*Carried into M5 from Phase 1 normalisation* — one gap in L0 invisible-content stripping
+(§10 Control 1), which is implemented for zero-width characters, HTML comments and inline
+hidden styles:
+
+| Gap | Effect today | Why it waits |
+|---|---|---|
+| **Hidden styles are matched on the inline `style` attribute only.** A rule in a `<style>` block — `.preheader { display:none }`, then `<div class="preheader">…</div>` — is not resolved. | **Errs toward exposure.** Text hidden that way is treated as ordinary visible content and reaches the model intact: for that payload the outcome is the same as no stripping at all. | Resolving it means selector matching and the cascade — a CSS engine parsing attacker-controlled input inside the security boundary, a larger attack surface than the thing it defends. Real payloads overwhelmingly use inline style, including the example in §10. |
+
+Worth stating beside it, because the two are easy to conflate: the *other* known limit in
+the same code — white text judged without computing the inherited background — errs the
+opposite way, toward **removal**, stripping visible text from a light-on-dark design. That
+costs the user utility but exposes nothing. Only the `<style>`-block gap is an exposure,
+and it is the one that needs closing.
+
 **M6 — multi-user (household).** Per-person accounts and dashboard logins, `user_id`
 scoping enforced on every query, user/admin/guardian roles, admin-without-data-access,
 grant-based temporary debug access. Isolation tests are the gate here — a leak *between
