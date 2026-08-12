@@ -1,0 +1,8 @@
+{
+  "expected_spans": [],
+  "expected_action": "quarantine",
+  "must_not_appear_in_output": [
+    "Vorstellungsgespräch bei Siemens"
+  ],
+  "notes": "German job interview, no L1 identifier — topic_hr (L3, quarantine) per architecture.md §5. Also exercises RFC 5545 line folding in a realistic fixture: DESCRIPTION is folded mid-word ('Zeugniss' / ' e') and must unfold to 'Zeugnisse', the same evasion shape as a quoted-printable soft break in mail"
+}

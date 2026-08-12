@@ -1,0 +1,15 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Acme Recruiting//Kalender//DE
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:cal-vorstellungsgespraech@sendashield.test
+DTSTAMP:20260811T093000Z
+DTSTART;TZID=Europe/Berlin:20260827T140000
+DTEND;TZID=Europe/Berlin:20260827T153000
+SUMMARY:Vorstellungsgespräch bei Siemens
+LOCATION:Werner-von-Siemens-Str. 1\, München
+DESCRIPTION:Zweite Runde mit dem Fachbereich. Bitte Lebenslauf und Zeugniss
+ e mitbringen\; Empfang meldet Sie an.
+END:VEVENT
+END:VCALENDAR

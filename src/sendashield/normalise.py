@@ -112,7 +112,15 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from html.parser import HTMLParser
 
-__all__ = ["ZERO_WIDTH_CHARS", "NormalisationError", "NormalisedText", "normalise"]
+from sendashield import ical
+
+__all__ = [
+    "ZERO_WIDTH_CHARS",
+    "NormalisationError",
+    "NormalisedText",
+    "normalise",
+    "normalise_calendar",
+]
 
 #: Stripped from subject and body alike (step 6). Each is invisible when rendered and has
 #: been used in the wild to split a checksum-validated identifier across characters a
@@ -423,6 +431,123 @@ def normalise(raw_message: bytes) -> NormalisedText:
         defects=defects,
         anomalies=tuple(anomalies),
     )
+
+
+#: Assembled per VEVENT as `SUMMARY + sep + LOCATION + sep + DESCRIPTION`, deliberately the
+#: same separator mail uses between subject and body. An event's SUMMARY is its subject in
+#: every way that matters: for a calendar entry with no body it is the *entire* sensitive
+#: payload ("Onkologie Nachsorge"), which is exactly the case `docs/build-plan.md` Phase 1
+#: calls out. A missing property contributes an empty string rather than collapsing, so the
+#: shape is fixed and offsets stay predictable — an event with no LOCATION reads
+#: `"Summary\n\n\n\nDescription"`, mirroring how a message with no Subject begins `"\n\n"`.
+_CALENDAR_FIELD_SEPARATOR = "\n\n"
+
+
+def _require_icalendar_shape(raw: bytes) -> None:
+    """The mirror of `_require_rfc5322_shape`: refuse input that is not iCalendar.
+
+    Same reasoning, opposite direction. `normalise()` rejects a calendar file because a mail
+    parser will happily produce empty text from one; this rejects a mail message because the
+    VEVENT walk below would find no components and produce nothing at all. Neither function
+    may be the one that quietly returns "" for input the other should have handled.
+
+    Sniffed on bytes, not decoded text, for the reason given in `_require_rfc5322_shape`.
+    """
+    if not raw.strip():
+        raise NormalisationError("input is empty or whitespace only")
+
+    sniff = raw[:_HEADER_SCAN_LIMIT]
+    if sniff.startswith(codecs.BOM_UTF8):
+        sniff = sniff[len(codecs.BOM_UTF8) :]
+    if not sniff.lstrip().lower().startswith(b"begin:vcalendar"):
+        raise NormalisationError(
+            "input does not begin with BEGIN:VCALENDAR — not an iCalendar object. "
+            "Mail belongs in normalise(); anything else must be quarantined."
+        )
+
+
+def normalise_calendar(raw_calendar: bytes) -> tuple[NormalisedText, ...]:
+    """Reduce an iCalendar object to one `NormalisedText` per VEVENT.
+
+    **One item per event, never a concatenation.** A calendar file is a container, not a
+    document: two events in one `.ics` are two separate things the user may have entirely
+    different policy for, and joining them would let a benign standup invite carry a
+    therapy appointment past a per-item decision. Offsets in a fixture are indices into a
+    single event's text, so concatenating would also make them meaningless.
+
+    Pipeline, mirroring `normalise()`:
+
+    0. **Refuse input that is not iCalendar** (`_require_icalendar_shape`).
+    1. **Decode charset** via the same fallback chain terminating at latin-1. RFC 5545
+       §3.1.4 makes UTF-8 the default for a bare `.ics`; a MIME `charset` parameter belongs
+       to the enclosing message and is the caller's business, not this function's.
+    2. **Normalise line endings** to `\\n`.
+    3. **Unfold** (`ical.unfold`), before anything else reads the text — a folded line may
+       split an identifier mid-token exactly like a quoted-printable soft break.
+    4. **Walk components**, collecting SUMMARY / LOCATION / DESCRIPTION per VEVENT and
+       decoding TEXT escapes (`sendashield.ical`).
+    5. **Strip zero-width characters and normalise to NFC**, identically to mail — the
+       evasion works the same way in a calendar summary as in a subject line.
+
+    Raises `NormalisationError` if the object contains no VEVENT at all, or if no event in
+    it has any text. Both mean a successful parse produced nothing scannable, which is the
+    fail-open this module exists to prevent. An *individual* textless event among others
+    that do have text is different — a busy-time block with no title is ordinary, so it is
+    returned with an `ical_event_without_text` anomaly rather than taking the file down.
+
+    **Out of scope, deliberately:** ATTENDEE and ORGANIZER, whose `CN=` parameters carry
+    real names and addresses. That is `private_person` / L2 territory, and the coordinate
+    system above is fixed by the three text properties; widening it later moves every
+    calendar fixture offset, so it is a decision to take deliberately rather than by
+    accident. `X-ALT-DESC` (Outlook's HTML description) is likewise not extracted, but its
+    presence raises an anomaly rather than passing unnoticed.
+    """
+    _require_icalendar_shape(raw_calendar)
+
+    text, charset_used = _decode_bytes(raw_calendar, None)
+    parsed = ical.parse_vevents(_normalise_line_endings(text))
+
+    if not parsed.events:
+        raise NormalisationError(
+            "iCalendar object contains no VEVENT component — nothing to scan. "
+            "VTODO and VJOURNAL are not supported; per docs/architecture.md §4 an "
+            "unsupported format must be quarantined, not silently skipped."
+        )
+    if not any(event.has_text for event in parsed.events):
+        raise NormalisationError(
+            f"iCalendar object parsed to {len(parsed.events)} VEVENT(s), none carrying any "
+            f"text — the object could not be meaningfully parsed"
+        )
+
+    results = []
+    for event in parsed.events:
+        transforms = [f"charset:{charset_used}", "ical_parsed"]
+        anomalies = list(event.anomalies)
+        if not event.has_text:
+            # Legitimate on its own (an untitled busy block), but indistinguishable from a
+            # parse failure without saying so — and this file has other events that did
+            # parse, so the parser is evidently working.
+            anomalies.append("ical_event_without_text")
+
+        fields = [event.summary, event.location, event.description]
+        stripped = [_strip_zero_width(field) for field in fields]
+        if stripped != fields:
+            transforms.append("invisible_stripped:zero_width")
+        transforms.append("nfc_normalized")
+
+        results.append(
+            NormalisedText(
+                text=_CALENDAR_FIELD_SEPARATOR.join(
+                    unicodedata.normalize("NFC", field) for field in stripped
+                ),
+                transforms=tuple(transforms),
+                # File-level defects apply to every event drawn from that file: the object
+                # was malformed, so no event parsed out of it is above suspicion.
+                defects=parsed.defects,
+                anomalies=tuple(sorted(set(anomalies))),
+            )
+        )
+    return tuple(results)
 
 
 def _require_rfc5322_shape(raw: bytes) -> None:

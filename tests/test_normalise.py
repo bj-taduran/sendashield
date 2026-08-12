@@ -10,6 +10,7 @@ unnoticed until a manual review after the corpus was already green.
 from __future__ import annotations
 
 import base64
+import codecs
 import time
 
 import pytest
@@ -21,6 +22,7 @@ from sendashield.normalise import (
     NormalisationError,
     _require_rfc5322_shape,
     normalise,
+    normalise_calendar,
 )
 
 HEADERS = "From: a@example.com\r\nTo: b@example.com\r\nSubject: {subject}\r\nMIME-Version: 1.0\r\n"
@@ -693,6 +695,185 @@ class TestAuditFieldsCarryNoContent:
         assert "iCalendar" in message
         assert "Onkologie" not in message
         assert "4242424242424242" not in message
+
+
+def _vcal(*lines: str) -> bytes:
+    """Wraps VEVENT lines in a minimal VCALENDAR, with the CRLF endings RFC 5545 specifies."""
+    body = "\r\n".join(("BEGIN:VCALENDAR", "VERSION:2.0", *lines, "END:VCALENDAR"))
+    return (body + "\r\n").encode("utf-8")
+
+
+class TestCalendarCoordinateSystem:
+    """SUMMARY \\n\\n LOCATION \\n\\n DESCRIPTION — the calendar analogue of subject-then-body."""
+
+    def test_three_fields_are_joined_in_order(self) -> None:
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "SUMMARY:Termin Dr. Weber",
+            "LOCATION:Hauptstr. 5",
+            "DESCRIPTION:Karte mitbringen",
+            "END:VEVENT",
+        )
+        assert normalise_calendar(raw)[0].text == (
+            "Termin Dr. Weber\n\nHauptstr. 5\n\nKarte mitbringen"
+        )
+
+    def test_missing_fields_keep_their_place(self) -> None:
+        """A missing property is an empty string, not a collapsed separator.
+
+        Mirrors how a message with no Subject normalises to a text beginning "\\n\\n": the
+        shape is fixed, so an offset means the same thing across fixtures.
+        """
+        raw = _vcal("BEGIN:VEVENT", "SUMMARY:Standup", "END:VEVENT")
+        assert normalise_calendar(raw)[0].text == "Standup\n\n\n\n"
+
+    def test_summary_only_event_is_scannable(self) -> None:
+        # The case the whole calendar batch exists for: no body anywhere, and the summary
+        # is the entire sensitive payload.
+        raw = _vcal("BEGIN:VEVENT", "SUMMARY:Zahlung DE89370400440532013000", "END:VEVENT")
+        assert "DE89370400440532013000" in normalise_calendar(raw)[0].text
+
+    def test_zero_width_chars_in_a_summary_are_stripped(self) -> None:
+        zw = ZERO_WIDTH_CHARS[0]
+        raw = _vcal("BEGIN:VEVENT", f"SUMMARY:DE89{zw}370400440532013000", "END:VEVENT")
+        result = normalise_calendar(raw)[0]
+        assert "DE89370400440532013000" in result.text
+        assert "invisible_stripped:zero_width" in result.transforms
+
+    def test_umlauts_survive_as_nfc(self) -> None:
+        raw = _vcal("BEGIN:VEVENT", "SUMMARY:Vorstellungsgespräch bei Siemens", "END:VEVENT")
+        assert "Vorstellungsgespräch bei Siemens" in normalise_calendar(raw)[0].text
+
+
+class TestCalendarProducesOneItemPerEvent:
+    """A calendar file is a container, not a document."""
+
+    def test_two_events_produce_two_items(self) -> None:
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "SUMMARY:Onkologie Nachsorge",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "SUMMARY:Team standup",
+            "END:VEVENT",
+        )
+        results = normalise_calendar(raw)
+        assert len(results) == 2
+        assert results[0].text.startswith("Onkologie Nachsorge")
+        assert results[1].text.startswith("Team standup")
+
+    @pytest.mark.leak
+    def test_no_item_contains_another_events_text(self) -> None:
+        """Concatenation would let one event's policy decision cover another's content.
+
+        Two events in one file may warrant entirely different handling — a therapy
+        appointment and a standup invite. If they shared a normalised text, a single
+        `allow` on the benign one would carry the sensitive one out with it.
+        """
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "SUMMARY:Onkologie Nachsorge",
+            "DESCRIPTION:Befund besprechen",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "SUMMARY:Team standup",
+            "END:VEVENT",
+        )
+        first, second = normalise_calendar(raw)
+        assert "Team standup" not in first.text
+        assert "Onkologie" not in second.text
+        assert "Befund" not in second.text
+
+
+class TestCalendarFailsClosed:
+    def test_mail_message_is_rejected(self) -> None:
+        """The mirror of normalise() rejecting a calendar file.
+
+        Neither entry point may be the one that quietly returns empty text for input the
+        other should have handled.
+        """
+        raw = b"From: a@example.com\r\nTo: b@example.com\r\nSubject: hi\r\n\r\nbody\r\n"
+        with pytest.raises(NormalisationError, match="BEGIN:VCALENDAR"):
+            normalise_calendar(raw)
+
+    def test_calendar_with_no_vevent_raises(self) -> None:
+        # A VTODO-only calendar parses cleanly and yields nothing. Returning an empty tuple
+        # would drop real content with no signal at all.
+        raw = _vcal("BEGIN:VTODO", "SUMMARY:Buy milk", "END:VTODO")
+        with pytest.raises(NormalisationError, match="no VEVENT"):
+            normalise_calendar(raw)
+
+    def test_calendar_whose_every_event_is_textless_raises(self) -> None:
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "DTSTART:20260815T090000Z",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "DTSTART:20260816T090000Z",
+            "END:VEVENT",
+        )
+        with pytest.raises(NormalisationError, match="none carrying any text"):
+            normalise_calendar(raw)
+
+    def test_single_textless_event_among_others_is_flagged_not_fatal(self) -> None:
+        """An untitled busy-time block is ordinary; a file of nothing but them is not.
+
+        The distinction is whether the parser is evidently working. If a sibling event
+        produced text, an empty one is a property of that event rather than evidence of a
+        parse failure — so it is returned with an anomaly instead of taking the file down.
+        """
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "SUMMARY:Real meeting",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "DTSTART:20260816T090000Z",
+            "END:VEVENT",
+        )
+        results = normalise_calendar(raw)
+        assert len(results) == 2
+        assert results[0].anomalies == ()
+        assert "ical_event_without_text" in results[1].anomalies
+
+    @pytest.mark.parametrize(
+        ("label", "raw"),
+        [
+            ("empty", b""),
+            ("whitespace only", b"  \r\n\r\n"),
+            ("plain prose", b"just some text\r\n"),
+            ("vCard", b"BEGIN:VCARD\r\nFN:Jane Doe\r\nEND:VCARD\r\n"),
+            ("JSON", b'{"summary": "Onkologie Nachsorge"}'),
+        ],
+    )
+    def test_non_calendar_input_raises(self, label: str, raw: bytes) -> None:
+        with pytest.raises(NormalisationError):
+            normalise_calendar(raw)
+
+    def test_bom_prefixed_calendar_is_accepted(self) -> None:
+        # The BOM lesson from Gate 1, in the other direction: a real .ics exported with a
+        # BOM must still be recognised.
+        raw = codecs.BOM_UTF8 + _vcal("BEGIN:VEVENT", "SUMMARY:Standup", "END:VEVENT")
+        assert "Standup" in normalise_calendar(raw)[0].text
+
+    def test_truncated_calendar_reports_a_defect_on_the_item(self) -> None:
+        raw = b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Truncated\r\n"
+        result = normalise_calendar(raw)[0]
+        assert "Truncated" in result.text
+        assert "UnterminatedVEvent" in result.defects
+
+    def test_file_level_defect_marks_every_event_from_that_file(self) -> None:
+        # The object was malformed, so no event drawn from it is above suspicion.
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "SUMMARY:First",
+            "a line with no colon",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "SUMMARY:Second",
+            "END:VEVENT",
+        )
+        results = normalise_calendar(raw)
+        assert all("MalformedContentLine" in item.defects for item in results)
 
 
 class TestFailureModes:

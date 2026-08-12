@@ -29,7 +29,7 @@ from typing import Any
 
 import pytest
 
-from sendashield.normalise import normalise
+from sendashield.normalise import NormalisedText, normalise, normalise_calendar
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 SCHEMA_PATH = Path(__file__).parent / "fixtures" / "expected.schema.json"
@@ -164,6 +164,29 @@ def _raw_fixture_path(expected_path: Path) -> Path:
     raise FileNotFoundError(f"no raw fixture (.eml or .ics) found alongside {expected_path.name}")
 
 
+def _normalise_fixture(raw_path: Path) -> NormalisedText:
+    """The single coordinate system a fixture's offsets are indices into.
+
+    `.eml` goes through `normalise()`, `.ics` through `normalise_calendar()`. A calendar
+    fixture must contain exactly one VEVENT: `normalise_calendar` returns one item per
+    event by design, and a fixture declaring `expected_spans` against a file with several
+    would have no way to say which event an offset belongs to. Multi-event splitting is a
+    normalisation property and is tested in `tests/test_normalise.py`, not encoded here —
+    so the constraint is asserted rather than papered over by silently taking the first.
+    """
+    raw = raw_path.read_bytes()
+    if raw_path.suffix == ".eml":
+        return normalise(raw)
+
+    events = normalise_calendar(raw)
+    assert len(events) == 1, (
+        f"{raw_path.name}: calendar fixtures must contain exactly one VEVENT, found "
+        f"{len(events)}. Fixture offsets are indices into a single event's text; split "
+        f"multi-event cases into separate fixtures."
+    )
+    return events[0]
+
+
 def _discover_cases() -> list[Path]:
     return sorted(GOLDEN_DIR.glob("*.expected.json"))
 
@@ -196,7 +219,7 @@ def test_corpus_contains_only_declared_synthetic_identifiers(expected_path: Path
     invisible to a plain grep of the .eml.
     """
     raw_path = _raw_fixture_path(expected_path)
-    text = normalise(raw_path.read_bytes()).text
+    text = _normalise_fixture(raw_path).text
 
     undeclared = _identifier_shaped_tokens(text) - DECLARED_SYNTHETIC_IDENTIFIERS
     assert not undeclared, (
@@ -218,7 +241,7 @@ def test_golden_fixture_parses_without_defects(expected_path: Path) -> None:
     weaken whichever case it belongs to.
     """
     raw_path = _raw_fixture_path(expected_path)
-    defects = normalise(raw_path.read_bytes()).defects
+    defects = _normalise_fixture(raw_path).defects
     assert defects == (), f"{raw_path.name} parsed with defects: {defects}"
 
 
@@ -234,8 +257,7 @@ def test_golden_fixture_is_internally_consistent(expected_path: Path) -> None:
     assert not schema_errors, f"{expected_path.name} violates schema: {schema_errors}"
 
     raw_path = _raw_fixture_path(expected_path)
-    normalised = normalise(raw_path.read_bytes())
-    text = normalised.text
+    text = _normalise_fixture(raw_path).text
 
     for span in expected["expected_spans"]:
         start, end, claimed_text = span["start"], span["end"], span["text"]

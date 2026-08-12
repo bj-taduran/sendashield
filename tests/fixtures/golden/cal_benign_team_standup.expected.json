@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "Recurring team standup, nothing sensitive — catches over-masking of ordinary calendar entries. Carries a VALARM whose own DESCRIPTION ('Standup in 5 minutes') must not be collected as the event's, since a nested component's properties are not the event's"
+}

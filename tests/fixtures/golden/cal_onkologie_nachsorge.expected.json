@@ -1,0 +1,8 @@
+{
+  "expected_spans": [],
+  "expected_action": "quarantine",
+  "must_not_appear_in_output": [
+    "Onkologie Nachsorge"
+  ],
+  "notes": "German oncology follow-up appointment, no body — the SUMMARY is the entire sensitive payload, which is the case docs/build-plan.md Phase 1 names for calendar. No L1 span exists to mask: per architecture.md §5 this is topic_health (L3, quarantine) where 'sensitivity is the item, not a span'. Masking the title would leave an empty event that still reveals the appointment happened"
+}

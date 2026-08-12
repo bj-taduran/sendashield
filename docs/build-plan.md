@@ -63,9 +63,26 @@ tests/fixtures/golden/
 }
 ```
 
-**Build 40–60 cases before writing a single detector**, covering:
+**Where Phase 1 ends and Phase 2 begins.** As originally written, this phase said to build
+40–60 cases covering "each detector, in isolation" *before* writing any detector, while
+Phase 2 step 1 says to write each detector's fixtures immediately before implementing it.
+Those contradict each other. The resolution, decided during Phase 1:
 
-- Each detector, in isolation, in a realistic message
+> **Phase 1 owns `normalise()` and corpus infrastructure. Per-detector fixtures move to
+> Phase 2, written immediately before each detector.**
+
+The reason is that a fixture is a claim about what a detector should do, and that claim is
+only reviewable against a spec you are about to implement — written months earlier it
+becomes a guess nobody can check, which is worse than no fixture because it looks like
+coverage. What Phase 1 must deliver is everything a fixture *depends* on: the coordinate
+system, the hygiene gates, the schema, and enough cases across every category to prove that
+infrastructure works. `credit_card` and `iban` cases are built here as that proof, since
+their checksums make them reviewable without any detector existing.
+
+**Build cases covering**, at minimum:
+
+- `credit_card` and `iban` in isolation, in realistic messages — the two whose correctness
+  is checkable by arithmetic today. The other four detectors' fixtures belong to Phase 2
 - **German and English** variants of each
 - **Formatting evasion**: spaces, dashes, non-breaking spaces, zero-width characters
   inside a card number
@@ -90,7 +107,9 @@ them, and Claude is good at thinking of evasion variants you wouldn't.
 
 One detector per chunk. For each:
 
-1. Ask Claude for the fixtures first (or write them)
+1. Ask Claude for the fixtures first (or write them). Per the boundary note in Phase 1,
+   this is where a detector's fixtures are written — immediately before implementing it,
+   while its spec is in front of you and the claims are reviewable
 2. **You review the fixtures** — this is where you verify the spec, not the code
 3. Ask Claude to implement `detect(text, config) -> list[Span]` to pass them
 4. Add a `hypothesis` property test

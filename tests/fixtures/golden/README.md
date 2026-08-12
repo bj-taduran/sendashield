@@ -21,9 +21,26 @@ cal_therapy_appointment.expected.json
 ```
 
 `.expected.json` is validated against `tests/fixtures/expected.schema.json`. `start`/`end`
-offsets are indices into `sendashield.normalise.normalise(raw_bytes).text` — see that
-module's docstring for the exact coordinate system; `tests/test_golden_corpus.py` asserts
-every fixture is self-consistent with it.
+offsets are indices into the fixture's normalised text — see the module docstrings for the
+exact coordinate systems; `tests/test_golden_corpus.py` asserts every fixture is
+self-consistent with its own.
+
+| Fixture | Normalised by | Coordinate system |
+|---|---|---|
+| `.eml` | `normalise(raw)` | `subject \n\n body` |
+| `.ics` | `normalise_calendar(raw)` | `SUMMARY \n\n LOCATION \n\n DESCRIPTION` |
+
+A missing field still occupies its place in both, so an event with no `LOCATION` reads
+`Summary\n\n\n\nDescription` — the shape is fixed and an offset means the same thing across
+fixtures.
+
+**A `.ics` fixture must contain exactly one `VEVENT`.** `normalise_calendar()` returns one
+item per event by design (a calendar file is a container, not a document — two events may
+warrant entirely different policy, and concatenating them would let one event's decision
+cover another's content). A fixture with several events would have no way to say which
+event a span offset belongs to, so the corpus asserts the constraint rather than silently
+taking the first. Multi-event splitting is a normalisation property and is tested in
+`tests/test_normalise.py`.
 
 Full format and coverage targets (German/English variants, formatting evasion, near-misses,
 benign messages, injection payloads): `docs/build-plan.md`, "Phase 1 — The golden corpus".
