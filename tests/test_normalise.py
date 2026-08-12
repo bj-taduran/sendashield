@@ -18,9 +18,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from sendashield.normalise import (
+    INJECTION_SUSPICION_PREFIXES,
     ZERO_WIDTH_CHARS,
     NormalisationError,
     _require_rfc5322_shape,
+    is_injection_suspicion,
     normalise,
     normalise_calendar,
 )
@@ -646,6 +648,68 @@ class TestNonMailRejectionDoesNotOverreach:
         assert "Please join us." in normalise(raw).text
 
 
+class TestInjectionSuspicionRegister:
+    """Which anomalies mean "someone built this deliberately" versus "this is malformed".
+
+    The distinction matters because the two warrant different responses: malformation is
+    common and mostly boring, deliberate construction is weak evidence of an attacker. Per
+    architecture.md §10 neither is a verdict — this whole class of signal is heuristic.
+    """
+
+    def test_duplicate_ical_property_is_a_suspicion_signal(self) -> None:
+        # A second SUMMARY is illegal per RFC 5545 and essentially unseen from real
+        # calendar software, so its presence suggests deliberate construction — the same
+        # register as text hidden with font-size:0, not a neutral parse note.
+        raw = _vcal("BEGIN:VEVENT", "SUMMARY:Kaffee", "SUMMARY:Onkologie", "END:VEVENT")
+        result = normalise_calendar(raw)[0]
+        suspicious = [a for a in result.anomalies if is_injection_suspicion(a)]
+        assert suspicious == ["ical_duplicate_property:summary"]
+
+    def test_hidden_summary_still_reaches_the_text(self) -> None:
+        # Flagging it is not enough — the point of keeping both occurrences is that the
+        # hidden one is still scannable.
+        raw = _vcal("BEGIN:VEVENT", "SUMMARY:Kaffee", "SUMMARY:Onkologie", "END:VEVENT")
+        assert "Onkologie" in normalise_calendar(raw)[0].text
+
+    def test_html_comment_imperative_is_a_suspicion_signal(self) -> None:
+        assert is_injection_suspicion("html_comment:imperative")
+
+    @pytest.mark.parametrize(
+        "anomaly",
+        [
+            "html_comment:identifier_shaped",
+            "ical_event_without_text",
+            "ical_html_alt_description_ignored",
+        ],
+    )
+    def test_ordinary_anomalies_are_not_suspicion_signals(self, anomaly: str) -> None:
+        # A card number in a comment is usually a template artefact; an untitled busy block
+        # is ordinary; an unread X-ALT-DESC is our gap, not the sender's doing. Putting
+        # these in the same register would make the register meaningless.
+        assert not is_injection_suspicion(anomaly)
+
+    def test_every_registered_prefix_matches_a_real_anomaly_label(self) -> None:
+        """Guards against a prefix that no longer matches anything it was written for.
+
+        A typo'd or stale prefix silently registers nothing — the failure would be a
+        signal that quietly stopped being raised, which is this project's whole failure
+        mode in miniature.
+        """
+        produced = {
+            "html_comment:imperative",
+            "html_comment:identifier_shaped",
+            "ical_duplicate_property:summary",
+            "ical_duplicate_property:location",
+            "ical_duplicate_property:description",
+            "ical_event_without_text",
+            "ical_html_alt_description_ignored",
+        }
+        for prefix in INJECTION_SUSPICION_PREFIXES:
+            assert any(label.startswith(prefix) for label in produced), (
+                f"registered prefix {prefix!r} matches no anomaly this codebase produces"
+            )
+
+
 class TestAuditFieldsCarryNoContent:
     """`transforms`, `defects` and `anomalies` may reach the audit log; text may not.
 
@@ -715,17 +779,35 @@ class TestCalendarCoordinateSystem:
             "END:VEVENT",
         )
         assert normalise_calendar(raw)[0].text == (
-            "Termin Dr. Weber\n\nHauptstr. 5\n\nKarte mitbringen"
+            "Termin Dr. Weber\n\nHauptstr. 5\n\n\n\n\n\nKarte mitbringen"
         )
 
     def test_missing_fields_keep_their_place(self) -> None:
         """A missing property is an empty string, not a collapsed separator.
 
         Mirrors how a message with no Subject normalises to a text beginning "\\n\\n": the
-        shape is fixed, so an offset means the same thing across fixtures.
+        shape is fixed, so an offset means the same thing across fixtures. Five slots, so a
+        summary-only event trails four empty ones.
         """
         raw = _vcal("BEGIN:VEVENT", "SUMMARY:Standup", "END:VEVENT")
-        assert normalise_calendar(raw)[0].text == "Standup\n\n\n\n"
+        assert normalise_calendar(raw)[0].text == "Standup\n\n\n\n\n\n\n\n"
+
+    def test_field_order_is_the_frozen_one(self) -> None:
+        """SUMMARY, LOCATION, ORGANIZER, ATTENDEES, DESCRIPTION — and nothing else.
+
+        Reordering or resizing this invalidates every offset in every .ics fixture, and
+        does so silently for any fixture that declares no spans. The literal below is the
+        assertion; if it needs changing, every calendar fixture needs rechecking.
+        """
+        raw = _vcal(
+            "BEGIN:VEVENT",
+            "SUMMARY:S",
+            "LOCATION:L",
+            "DESCRIPTION:D",
+            "END:VEVENT",
+        )
+        # Two empty reserved slots sit between LOCATION and DESCRIPTION.
+        assert normalise_calendar(raw)[0].text == "S\n\nL\n\n\n\n\n\nD"
 
     def test_summary_only_event_is_scannable(self) -> None:
         # The case the whole calendar batch exists for: no body anywhere, and the summary
@@ -743,6 +825,60 @@ class TestCalendarCoordinateSystem:
     def test_umlauts_survive_as_nfc(self) -> None:
         raw = _vcal("BEGIN:VEVENT", "SUMMARY:Vorstellungsgespräch bei Siemens", "END:VEVENT")
         assert "Vorstellungsgespräch bei Siemens" in normalise_calendar(raw)[0].text
+
+
+class TestCalendarParticipantGap:
+    """The reserved ORGANIZER / ATTENDEES slots, and the gap they are reserved for.
+
+    These tests pin *current* behaviour, which is a known gap rather than a desired end
+    state. At M4 participants get extracted and every assertion here has to be revisited
+    deliberately — which is the point. A gap nothing asserts is a gap that gets forgotten.
+    """
+
+    KAFFEE = (
+        "BEGIN:VEVENT",
+        "SUMMARY:Kaffee",
+        "ORGANIZER;CN=Ines Roth:mailto:ines@example.com",
+        "ATTENDEE;CN=RA Müller:mailto:scheidungsanwalt-mueller@kanzlei.example",
+        "END:VEVENT",
+    )
+
+    def test_participants_are_not_extracted_yet(self) -> None:
+        """The gap, stated concretely.
+
+        `docs/architecture.md` §3: "an event usually has no body, so nearly all signal is
+        in the title and the attendee list". This event is plainly sensitive to a human
+        reader — a divorce lawyer is on it — and normalises to one harmless word. Nothing
+        downstream can catch that today, because the text a detector sees does not contain
+        it. Asserted so the gap is a fact in the test suite, not a caveat in a docstring.
+        """
+        result = normalise_calendar(_vcal(*self.KAFFEE))[0]
+        assert result.text == "Kaffee\n\n\n\n\n\n\n\n"
+        assert "scheidungsanwalt" not in result.text
+        assert "kanzlei" not in result.text
+
+    def test_the_gap_is_reported_on_the_item(self) -> None:
+        result = normalise_calendar(_vcal(*self.KAFFEE))[0]
+        assert "ical_participants_not_extracted" in result.transforms
+
+    def test_an_event_without_participants_is_not_marked(self) -> None:
+        raw = _vcal("BEGIN:VEVENT", "SUMMARY:Solo work block", "END:VEVENT")
+        assert "ical_participants_not_extracted" not in normalise_calendar(raw)[0].transforms
+
+    def test_reserved_slots_hold_their_place_when_populated_later(self) -> None:
+        """The reason the slots exist now rather than being appended at M4.
+
+        An offset into DESCRIPTION must not depend on whether participants were extracted.
+        Both events below place DESCRIPTION at the same index — the only difference between
+        them is participant data that is currently unread, and at M4 that has to stay true.
+        """
+        without = normalise_calendar(
+            _vcal("BEGIN:VEVENT", "SUMMARY:Kaffee", "DESCRIPTION:MARKER", "END:VEVENT")
+        )[0]
+        with_participants = normalise_calendar(
+            _vcal(*self.KAFFEE[:-1], "DESCRIPTION:MARKER", "END:VEVENT")
+        )[0]
+        assert without.text.index("MARKER") == with_participants.text.index("MARKER")
 
 
 class TestCalendarProducesOneItemPerEvent:
@@ -802,6 +938,18 @@ class TestCalendarFailsClosed:
         raw = _vcal("BEGIN:VTODO", "SUMMARY:Buy milk", "END:VTODO")
         with pytest.raises(NormalisationError, match="no VEVENT"):
             normalise_calendar(raw)
+
+    def test_lone_textless_event_is_returned_not_refused(self) -> None:
+        """A file holding one untitled busy-time block is ordinary, not a parse failure.
+
+        Refusing it would quarantine an entirely normal calendar entry — the "too strict is
+        a different failure, not a safe one" reasoning from the mail header allowlist,
+        applied here. Textless is only evidence of a parse failure in the plural.
+        """
+        raw = _vcal("BEGIN:VEVENT", "DTSTART:20260815T090000Z", "END:VEVENT")
+        results = normalise_calendar(raw)
+        assert len(results) == 1
+        assert "ical_event_without_text" in results[0].anomalies
 
     def test_calendar_whose_every_event_is_textless_raises(self) -> None:
         raw = _vcal(

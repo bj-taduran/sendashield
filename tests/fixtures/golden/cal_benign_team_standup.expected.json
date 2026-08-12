@@ -2,5 +2,5 @@
   "expected_spans": [],
   "expected_action": "allow",
   "must_not_appear_in_output": [],
-  "notes": "Recurring team standup, nothing sensitive — catches over-masking of ordinary calendar entries. Carries a VALARM whose own DESCRIPTION ('Standup in 5 minutes') must not be collected as the event's, since a nested component's properties are not the event's"
+  "notes": "Recurring team standup, nothing sensitive — catches over-masking of ordinary calendar entries. Carries a VALARM whose own DESCRIPTION ('Standup in 5 minutes') must not be collected as the event's, since a nested component's properties are not the event's. Also the corpus's only fixture with ORGANIZER and ATTENDEE properties, so it is what exercises the ical_participants_not_extracted transform; the ATTENDEE lines are folded mid-address, which is how real invites carry them. At M4 those participants start appearing in the reserved slots and this fixture's normalised text changes — deliberately, and with no offset movement, since it declares no spans"
 }

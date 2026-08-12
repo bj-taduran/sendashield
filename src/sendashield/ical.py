@@ -49,11 +49,22 @@ __all__ = [
     "unfold",
 ]
 
-#: The three text properties `sendashield.normalise` assembles into an event's coordinate
-#: system, in that order. Everything else in a VEVENT is structured data (timestamps,
-#: identifiers, recurrence rules) or is out of scope — see the module note in
-#: `normalise.normalise_calendar` on ATTENDEE/ORGANIZER.
+#: The text properties extracted today. `sendashield.normalise` assembles these into an
+#: event's coordinate system alongside two reserved participant slots — see
+#: `normalise._CALENDAR_FIELD_ORDER`, which is the frozen definition.
 TEXT_PROPERTIES = ("SUMMARY", "LOCATION", "DESCRIPTION")
+
+#: Participant properties. Their *presence* is detected so the gap can be reported; their
+#: values are not extracted until M4 (`docs/architecture.md` §15), when the calendar-title
+#: profile lands and `Party` parsing exists to give `CN=` and `mailto:` meaning.
+#:
+#: This is the largest known gap in calendar normalisation. §3 is explicit that "an event
+#: usually has no body, so nearly all signal is in the title and the attendee list" — so an
+#: event titled `Kaffee` whose attendee is `scheidungsanwalt-mueller@kanzlei.de` reads as
+#: plainly sensitive to a human and normalises to one harmless word today. The coordinate
+#: system reserves their slots now precisely so closing this does not move a single existing
+#: offset.
+PARTICIPANT_PROPERTIES = ("ORGANIZER", "ATTENDEE")
 
 #: An HTML alternative to DESCRIPTION, widely emitted by Outlook. It is real content a
 #: human reader may see, it is not in `TEXT_PROPERTIES`, and it needs the HTML-to-text
@@ -61,7 +72,15 @@ TEXT_PROPERTIES = ("SUMMARY", "LOCATION", "DESCRIPTION")
 #: presence is reported rather than ignored. See `ANOMALY_HTML_ALT_DESCRIPTION`.
 _HTML_ALT_DESCRIPTION = "X-ALT-DESC"
 
+#: A property RFC 5545 §3.6.1 permits at most once occurred more than once.
+#:
+#: This is an **injection-suspicion** signal, not a neutral parse note. A duplicate SUMMARY
+#: is illegal and essentially unseen in files produced by real calendar software, so its
+#: presence is weak evidence of deliberate construction — the same register as text hidden
+#: with `font-size:0`, and read the same way: a hint for the pipeline to weigh, never a
+#: verdict. Registered in `normalise.INJECTION_SUSPICION_PREFIXES`.
 ANOMALY_DUPLICATE_PROPERTY = "ical_duplicate_property"
+
 ANOMALY_HTML_ALT_DESCRIPTION = "ical_html_alt_description_ignored"
 
 #: RFC 5545 §3.1: a CRLF followed by a single space or tab is a fold and both characters
@@ -87,6 +106,10 @@ class VEvent:
     location: str
     description: str
     anomalies: tuple[str, ...] = ()
+    #: True when the event carried ORGANIZER or ATTENDEE properties, whose values are not
+    #: extracted until M4. Reported so the gap is visible per item rather than only in a
+    #: docstring — see `PARTICIPANT_PROPERTIES`.
+    participants_present: bool = False
 
     @property
     def has_text(self) -> bool:
@@ -156,6 +179,7 @@ def parse_vevents(text: str) -> ParsedCalendar:
     stack: list[str] = []
     collected: dict[str, list[str]] | None = None
     anomalies: set[str] = set()
+    participants_present = False
 
     for line in unfold(text).split("\n"):
         if not line.strip():
@@ -176,6 +200,7 @@ def parse_vevents(text: str) -> ParsedCalendar:
                     defects.append("NestedVEvent")
                 collected = {}
                 anomalies = set()
+                participants_present = False
             continue
 
         if name == "END":
@@ -187,7 +212,7 @@ def parse_vevents(text: str) -> ParsedCalendar:
                 defects.append("MismatchedEnd")
             stack.pop()
             if component == "VEVENT" and collected is not None:
-                events.append(_build_event(collected, anomalies))
+                events.append(_build_event(collected, anomalies, participants_present))
                 collected = None
             continue
 
@@ -195,6 +220,11 @@ def parse_vevents(text: str) -> ParsedCalendar:
             continue
         if name in TEXT_PROPERTIES:
             collected.setdefault(name, []).append(unescape_text(raw_value))
+        elif name in PARTICIPANT_PROPERTIES:
+            # Presence only. The value is deliberately not read yet, and noting that here
+            # is what keeps "we saw participant data and did not look at it" from being a
+            # fact that exists only in a docstring.
+            participants_present = True
         elif name == _HTML_ALT_DESCRIPTION:
             anomalies.add(ANOMALY_HTML_ALT_DESCRIPTION)
 
@@ -202,12 +232,14 @@ def parse_vevents(text: str) -> ParsedCalendar:
         # Truncated file. Emit what was collected — the text is real and a detector should
         # see it — but record the defect so the pipeline can fail closed on it.
         defects.append("UnterminatedVEvent")
-        events.append(_build_event(collected, anomalies))
+        events.append(_build_event(collected, anomalies, participants_present))
 
     return ParsedCalendar(events=tuple(events), defects=tuple(defects))
 
 
-def _build_event(collected: dict[str, list[str]], anomalies: set[str]) -> VEvent:
+def _build_event(
+    collected: dict[str, list[str]], anomalies: set[str], participants_present: bool
+) -> VEvent:
     """Assemble one VEvent, keeping every occurrence of a duplicated property.
 
     A repeated SUMMARY is illegal, but dropping the extra would make text that some clients
@@ -226,4 +258,5 @@ def _build_event(collected: dict[str, list[str]], anomalies: set[str]) -> VEvent
         location=values["LOCATION"],
         description=values["DESCRIPTION"],
         anomalies=tuple(sorted(all_anomalies)),
+        participants_present=participants_present,
     )

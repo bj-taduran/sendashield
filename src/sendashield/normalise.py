@@ -115,9 +115,11 @@ from html.parser import HTMLParser
 from sendashield import ical
 
 __all__ = [
+    "INJECTION_SUSPICION_PREFIXES",
     "ZERO_WIDTH_CHARS",
     "NormalisationError",
     "NormalisedText",
+    "is_injection_suspicion",
     "normalise",
     "normalise_calendar",
 ]
@@ -282,6 +284,38 @@ _COMMENT_IMPERATIVE_RE = re.compile(
 _ANOMALY_COMMENT_IDENTIFIER = "html_comment:identifier_shaped"
 _ANOMALY_COMMENT_IMPERATIVE = "html_comment:imperative"
 
+#: Anomalies that are weak evidence of **deliberate construction**, as opposed to ordinary
+#: malformation or a quirk of some mail client. They share a register and should be read
+#: the same way: a sender went to the trouble of putting something where a human reader
+#: would not see it, or of building a structure that real software does not produce.
+#:
+#: Membership is a prefix match, so per-instance detail (`ical_duplicate_property:summary`)
+#: stays in the label without needing an entry per property.
+#:
+#: **None of these is a verdict.** `docs/architecture.md` §10 rates this whole class as
+#: heuristic — "an arms race", and "nothing like checksum-validating a card number" — and
+#: the honest claim is that they raise the cost of the attack. `CLAUDE.md` invariant 3 also
+#: applies in reverse: nothing here may downgrade an L1 result, and equally, the absence of
+#: any of them is not evidence of safety.
+#:
+#: Deliberately excluded: `html_comment:identifier_shaped` (a card number in a comment is
+#: usually a template artefact, so it is a hidden-content signal rather than a construction
+#: one) and `ical_event_without_text` (an untitled busy block is ordinary).
+INJECTION_SUSPICION_PREFIXES = (
+    "html_comment:imperative",
+    "ical_duplicate_property",
+)
+
+
+def is_injection_suspicion(anomaly: str) -> bool:
+    """Whether an anomaly label belongs to the injection-suspicion register.
+
+    A predicate rather than a set membership test so the caller never has to parse label
+    strings, and so adding a per-instance suffix to a label cannot silently drop it out of
+    the register. See `INJECTION_SUSPICION_PREFIXES`.
+    """
+    return anomaly.startswith(INJECTION_SUSPICION_PREFIXES)
+
 
 class NormalisationError(Exception):
     """Raised when a message cannot be reduced to text at all.
@@ -433,13 +467,30 @@ def normalise(raw_message: bytes) -> NormalisedText:
     )
 
 
-#: Assembled per VEVENT as `SUMMARY + sep + LOCATION + sep + DESCRIPTION`, deliberately the
-#: same separator mail uses between subject and body. An event's SUMMARY is its subject in
-#: every way that matters: for a calendar entry with no body it is the *entire* sensitive
-#: payload ("Onkologie Nachsorge"), which is exactly the case `docs/build-plan.md` Phase 1
-#: calls out. A missing property contributes an empty string rather than collapsing, so the
-#: shape is fixed and offsets stay predictable — an event with no LOCATION reads
-#: `"Summary\n\n\n\nDescription"`, mirroring how a message with no Subject begins `"\n\n"`.
+#: **FROZEN.** The order of an event's normalised text. Changing it — reordering, inserting,
+#: or removing a slot — invalidates every offset in every `.ics` fixture in the golden
+#: corpus, and does so silently for any fixture that happens to declare no spans.
+#:
+#:     SUMMARY \n\n LOCATION \n\n ORGANIZER \n\n ATTENDEES \n\n DESCRIPTION
+#:
+#: The separator is the one mail uses between subject and body, because an event's SUMMARY
+#: is its subject in every way that matters: for a calendar entry with no body it is the
+#: *entire* sensitive payload ("Onkologie Nachsorge").
+#:
+#: **A field keeps its place whether or not it has content.** A missing property contributes
+#: an empty string rather than collapsing, so an event with only a summary reads
+#: `"Standup\n\n\n\n\n\n\n\n"` — mirroring how a message with no Subject begins `"\n\n"`.
+#: That is what makes an offset mean the same thing across every fixture.
+#:
+#: `ORGANIZER` and `ATTENDEES` are **reserved and currently always empty**. `sendashield.ical`
+#: does not extract them yet; they are populated at M4 with the calendar-title profile
+#: (`docs/architecture.md` §15). The slots exist now so that closing that gap moves no
+#: offset — the alternative was appending them later and rewriting every calendar fixture,
+#: which is exactly the kind of churn that turns a reviewed corpus into a re-derived one.
+#: Until then, `ical_participants_not_extracted` marks each item whose participants went
+#: unread. See `ical.PARTICIPANT_PROPERTIES` for why this gap is the significant one.
+_CALENDAR_FIELD_ORDER = ("SUMMARY", "LOCATION", "ORGANIZER", "ATTENDEES", "DESCRIPTION")
+
 _CALENDAR_FIELD_SEPARATOR = "\n\n"
 
 
@@ -484,23 +535,31 @@ def normalise_calendar(raw_calendar: bytes) -> tuple[NormalisedText, ...]:
     2. **Normalise line endings** to `\\n`.
     3. **Unfold** (`ical.unfold`), before anything else reads the text — a folded line may
        split an identifier mid-token exactly like a quoted-printable soft break.
-    4. **Walk components**, collecting SUMMARY / LOCATION / DESCRIPTION per VEVENT and
-       decoding TEXT escapes (`sendashield.ical`).
+    4. **Walk components**, collecting the text properties per VEVENT and decoding TEXT
+       escapes (`sendashield.ical`), then assembling them in `_CALENDAR_FIELD_ORDER` —
+       which is frozen, and which reserves two slots that are not populated yet.
     5. **Strip zero-width characters and normalise to NFC**, identically to mail — the
        evasion works the same way in a calendar summary as in a subject line.
 
-    Raises `NormalisationError` if the object contains no VEVENT at all, or if no event in
-    it has any text. Both mean a successful parse produced nothing scannable, which is the
-    fail-open this module exists to prevent. An *individual* textless event among others
-    that do have text is different — a busy-time block with no title is ordinary, so it is
-    returned with an `ical_event_without_text` anomaly rather than taking the file down.
+    Raises `NormalisationError` if the object contains no VEVENT at all, or if it holds two
+    or more events and none of them carries any text. Both mean a successful parse produced
+    nothing scannable, which is the fail-open this module exists to prevent. A *single*
+    textless event does not raise — one untitled busy-time block is the commonest entry in a
+    shared work calendar, and refusing the file would quarantine an ordinary one. It returns
+    with an `ical_event_without_text` anomaly instead.
 
-    **Out of scope, deliberately:** ATTENDEE and ORGANIZER, whose `CN=` parameters carry
-    real names and addresses. That is `private_person` / L2 territory, and the coordinate
-    system above is fixed by the three text properties; widening it later moves every
-    calendar fixture offset, so it is a decision to take deliberately rather than by
-    accident. `X-ALT-DESC` (Outlook's HTML description) is likewise not extracted, but its
-    presence raises an anomaly rather than passing unnoticed.
+    **Known gaps, both carried to M4** (`docs/architecture.md` §15) and both non-silent:
+
+    - **ORGANIZER / ATTENDEE are not extracted.** Their slots in the coordinate system are
+      reserved and empty; items whose participants went unread carry the
+      `ical_participants_not_extracted` transform. This is the significant one — §3 puts
+      "nearly all signal" for calendar in the title and the attendee list, so an event
+      titled `Kaffee` with a divorce lawyer among its attendees currently normalises to one
+      harmless word.
+    - **`X-ALT-DESC` is not extracted.** Outlook's HTML alternative to DESCRIPTION is
+      content a human reader sees; it needs the HTML-to-text path rather than the TEXT
+      unescaping path. Smaller than the attendee gap, same shape. Raises
+      `ical_html_alt_description_ignored`.
     """
     _require_icalendar_shape(raw_calendar)
 
@@ -513,9 +572,13 @@ def normalise_calendar(raw_calendar: bytes) -> tuple[NormalisedText, ...]:
             "VTODO and VJOURNAL are not supported; per docs/architecture.md §4 an "
             "unsupported format must be quarantined, not silently skipped."
         )
-    if not any(event.has_text for event in parsed.events):
+    if len(parsed.events) > 1 and not any(event.has_text for event in parsed.events):
+        # Only fatal in the plural. One untitled event is an ordinary busy-time block and
+        # the commonest thing in a shared work calendar; a file of nothing *but* textless
+        # events is a parse that produced no content, which is the fail-open this guards.
+        # A lone textless event is returned with the anomaly below instead.
         raise NormalisationError(
-            f"iCalendar object parsed to {len(parsed.events)} VEVENT(s), none carrying any "
+            f"iCalendar object parsed to {len(parsed.events)} VEVENTs, none carrying any "
             f"text — the object could not be meaningfully parsed"
         )
 
@@ -524,12 +587,27 @@ def normalise_calendar(raw_calendar: bytes) -> tuple[NormalisedText, ...]:
         transforms = [f"charset:{charset_used}", "ical_parsed"]
         anomalies = list(event.anomalies)
         if not event.has_text:
-            # Legitimate on its own (an untitled busy block), but indistinguishable from a
-            # parse failure without saying so — and this file has other events that did
-            # parse, so the parser is evidently working.
+            # Not an error on its own — an untitled busy block is ordinary — but it is
+            # indistinguishable from a parse failure unless it is said out loud.
             anomalies.append("ical_event_without_text")
+        if event.participants_present:
+            # A transform, not an anomaly: this fires on essentially every real invite, and
+            # an anomaly that is always present teaches a reviewer to ignore anomalies. It
+            # belongs in the audit trail of what happened to the item, which is what
+            # `transforms` is. See `_CALENDAR_FIELD_ORDER`.
+            transforms.append("ical_participants_not_extracted")
 
-        fields = [event.summary, event.location, event.description]
+        # Keyed by name and read back through _CALENDAR_FIELD_ORDER, so the frozen order is
+        # load-bearing rather than decorative — a positional list would let the two drift
+        # apart silently, which is the one failure this arrangement exists to prevent.
+        values = {
+            "SUMMARY": event.summary,
+            "LOCATION": event.location,
+            "ORGANIZER": "",  # reserved until M4 — see _CALENDAR_FIELD_ORDER
+            "ATTENDEES": "",  # reserved until M4
+            "DESCRIPTION": event.description,
+        }
+        fields = [values[name] for name in _CALENDAR_FIELD_ORDER]
         stripped = [_strip_zero_width(field) for field in fields]
         if stripped != fields:
             transforms.append("invisible_stripped:zero_width")

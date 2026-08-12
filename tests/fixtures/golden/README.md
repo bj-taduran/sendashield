@@ -28,11 +28,19 @@ self-consistent with its own.
 | Fixture | Normalised by | Coordinate system |
 |---|---|---|
 | `.eml` | `normalise(raw)` | `subject \n\n body` |
-| `.ics` | `normalise_calendar(raw)` | `SUMMARY \n\n LOCATION \n\n DESCRIPTION` |
+| `.ics` | `normalise_calendar(raw)` | `SUMMARY \n\n LOCATION \n\n ORGANIZER \n\n ATTENDEES \n\n DESCRIPTION` |
 
-A missing field still occupies its place in both, so an event with no `LOCATION` reads
-`Summary\n\n\n\nDescription` — the shape is fixed and an offset means the same thing across
+A missing field still occupies its place in both, so an event with only a summary reads
+`Standup\n\n\n\n\n\n\n\n` — the shape is fixed and an offset means the same thing across
 fixtures.
+
+**The calendar field order is frozen.** Reordering, inserting or removing a slot
+invalidates every `.ics` offset in this directory, silently for any fixture that declares
+no spans. `ORGANIZER` and `ATTENDEES` are reserved and always empty today; they are
+populated at M4, and their slots exist now precisely so that closing that gap moves no
+offset. This already happened once — adding the two slots moved
+`cal_iban_in_description`'s span from 51 to 55 — which is the churn freezing the order
+prevents from recurring.
 
 **A `.ics` fixture must contain exactly one `VEVENT`.** `normalise_calendar()` returns one
 item per event by design (a calendar file is a container, not a document — two events may

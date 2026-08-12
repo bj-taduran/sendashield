@@ -1154,6 +1154,16 @@ the contingency if Google's Personal Use exemption changes.
 
 **M4 — semantics.** L3 topic classifier (in-process `llama-cpp-python`, pinned GGUF, grammar-constrained output, 50–100 regression fixtures in CI), calendar-title profile, German detector pack.
 
+*Carried into M4 from Phase 1 normalisation* — two things a human reader sees that
+`normalise_calendar()` does not currently read. Both are reported per item rather than
+passed over silently, and both are listed here so they are scheduled rather than
+remembered:
+
+| Gap | Signal raised today | Why it waits |
+|---|---|---|
+| **`ORGANIZER` / `ATTENDEE` are not extracted.** §3 puts "nearly all signal" for calendar in the title and the attendee list, so an event titled `Kaffee` with a divorce lawyer among its attendees normalises to one harmless word. | `ical_participants_not_extracted` transform | Needs `Party` parsing to give `CN=` and `mailto:` meaning, which arrives with the calendar-title profile. Their slots in the coordinate system are **already reserved and frozen**, so populating them moves no existing fixture offset. |
+| **`X-ALT-DESC` is not extracted.** Outlook's HTML alternative to `DESCRIPTION` is content a human reader sees. | `ical_html_alt_description_ignored` anomaly | Needs the HTML-to-text path rather than the TEXT unescaping path. Smaller than the attendee gap, same shape. |
+
 **M5 — write path and injection.** Gmail native drafts with rehydration, egress scanning,
 prompt-injection normalisation and defanging.
 

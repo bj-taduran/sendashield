@@ -2,6 +2,7 @@ BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Bright Path//Team Calendar//EN
 CALSCALE:GREGORIAN
+METHOD:REQUEST
 BEGIN:VEVENT
 UID:cal-team-standup@sendashield.test
 DTSTAMP:20260812T070000Z
@@ -10,6 +11,11 @@ DTEND;TZID=Europe/Berlin:20260813T094500
 RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR
 SUMMARY:Team standup
 LOCATION:Meeting room 2
+ORGANIZER;CN=Tom Weaver:mailto:tom@brightpath-logistics.example
+ATTENDEE;CN=Priya Nair;ROLE=REQ-PARTICIPANT:mailto:priya@brightpath-logistics.e
+ xample
+ATTENDEE;CN=Sam Okafor;ROLE=REQ-PARTICIPANT:mailto:sam@brightpath-logistics.exa
+ mple
 DESCRIPTION:Quick sync. Blockers first\, demos after.
 BEGIN:VALARM
 TRIGGER:-PT5M

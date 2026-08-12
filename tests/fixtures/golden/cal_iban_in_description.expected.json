@@ -2,8 +2,8 @@
   "expected_spans": [
     {
       "detector": "iban",
-      "start": 51,
-      "end": 73,
+      "start": 55,
+      "end": 77,
       "text": "DE94500700100123456789"
     }
   ],
@@ -11,5 +11,5 @@
   "must_not_appear_in_output": [
     "DE94500700100123456789"
   ],
-  "notes": "IBAN in a calendar DESCRIPTION — the only calendar fixture carrying an L1 span, so it is what actually exercises the .ics coordinate system in the corpus. The event has an empty LOCATION, so the offset also depends on an absent field still occupying its place (SUMMARY \\n\\n LOCATION \\n\\n DESCRIPTION); a change that collapsed empty fields would move this span and fail here"
+  "notes": "IBAN in a calendar DESCRIPTION — the only calendar fixture carrying an L1 span, so it is what actually exercises the .ics coordinate system in the corpus. The event has an empty LOCATION, so the offset also depends on an absent field still occupying its place (SUMMARY \\n\\n LOCATION \\n\\n DESCRIPTION); a change that collapsed empty fields, or that reordered the frozen field list, would move this span and fail here. The offset already moved once (51 -> 55) when the reserved ORGANIZER and ATTENDEES slots were added, which is exactly the churn freezing the order now prevents from recurring at M4"
 }
