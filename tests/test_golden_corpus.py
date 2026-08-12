@@ -124,7 +124,16 @@ DECLARED_SYNTHETIC_IDENTIFIERS = frozenset(
         "4000002500003155",  # written NBSP-grouped in the evasion fixture
         "4000000000009995",
         "5105105105105100",
+        "5200828282828210",  # written hyphen-grouped in card_dash_grouped_evasion
+        "4000000000000077",  # written space-grouped in card_space_grouped_evasion
+        # Checksum-*failing* near-miss values. These need no trust at all, unlike every
+        # entry above: a 16-digit string that fails Luhn is not a card number, and an
+        # IBAN-shaped string that fails mod-97 is not an account, so neither can be real
+        # data however it was arrived at. Prefer deriving a near-miss this way over picking
+        # an arbitrary number and asserting it is fictional.
         "4242424242424241",  # Stripe's documented Luhn-failing "incorrect_number" card
+        "5555555555554440",  # hyphen-grouped in the fixture; Luhn False
+        "DE89730400440532013000",  # valid IBAN with 37 -> 73 transposed; mod-97 False
         # Generated mod-97-valid IBANs
         "DE89370400440532013000",
         "DE94500700100123456789",
@@ -142,16 +151,27 @@ DECLARED_SYNTHETIC_IDENTIFIERS = frozenset(
 #: net, not a detector, and it errs toward flagging so nothing slips by unreviewed.
 _IDENTIFIER_SHAPED_RE = re.compile(r"\b(?:[A-Z]{2}\d{2}[A-Z0-9]{10,30}|[0-9A-Z]*\d{12,})\b")
 
-#: Whitespace (including NBSP) sitting between two digits. Removed before the second scan
-#: pass, because people write card numbers in groups — a real card pasted as
-#: "4242 4242 4242 4242" contains no 12-digit run and would sail past a single-pass scan.
-_INTER_DIGIT_SPACE_RE = re.compile(r"(?<=\d)[\s ]+(?=\d)")
+#: Any separator people put *between digit groups* — whitespace (including NBSP), hyphens,
+#: dots. Removed before the second scan pass, because a card written in groups contains no
+#: long digit run: "4242 4242 4242 4242" and "4242-4242-4242-4242" both have a longest run
+#: of four.
+#:
+#: Hyphens and dots were missing until the dash-grouped fixtures were added, and the gap was
+#: total rather than partial: `4242-4242-4242-4242` produced **no tokens at all**, so an
+#: undeclared real card written that way passed the guard in silence. That is the precise
+#: mistake this guard exists to catch, and it is how card numbers are printed on the cards
+#: themselves.
+#:
+#: Known false positive, accepted: a dotted quad like `192.168.100.100` collapses to twelve
+#: digits and will be flagged. That is the intended direction — declaring one IP address
+#: costs a line, and the opposite error puts real data in git history permanently.
+_INTER_DIGIT_SEPARATOR_RE = re.compile(r"(?<=\d)[\s\u00a0\-.]+(?=\d)")
 
 
 def _identifier_shaped_tokens(text: str) -> set[str]:
     """Identifier-shaped tokens in `text`, both as written and with digit grouping removed."""
     return set(_IDENTIFIER_SHAPED_RE.findall(text)) | set(
-        _IDENTIFIER_SHAPED_RE.findall(_INTER_DIGIT_SPACE_RE.sub("", text))
+        _IDENTIFIER_SHAPED_RE.findall(_INTER_DIGIT_SEPARATOR_RE.sub("", text))
     )
 
 
@@ -194,15 +214,47 @@ def _discover_cases() -> list[Path]:
 CASES = _discover_cases()
 
 
+@pytest.mark.parametrize(
+    ("label", "grouped"),
+    [
+        ("plain", "4111111111111111"),
+        ("spaces", "4111 1111 1111 1111"),
+        ("non-breaking spaces", "4111 1111 1111 1111"),
+        ("hyphens", "4111-1111-1111-1111"),
+        ("dots", "4111.1111.1111.1111"),
+        ("mixed", "4111-1111 1111.1111"),
+    ],
+)
+def test_hygiene_guard_sees_through_every_grouping_style(label: str, grouped: str) -> None:
+    """The guard must fire on an undeclared card however it is written.
+
+    Regression: the separator class covered only whitespace, so `4111-1111-1111-1111`
+    produced no tokens at all and an undeclared real card written that way passed in
+    silence. Hyphens are how card numbers are printed on the cards themselves, which makes
+    that the likeliest paste format after plain digits — the guard's whole purpose is to
+    make "somebody pasted a real card in here" loud rather than permanent.
+    """
+    undeclared = _identifier_shaped_tokens(f"card {grouped} here") - DECLARED_SYNTHETIC_IDENTIFIERS
+    assert undeclared, (
+        f"hygiene guard did not fire on an undeclared card grouped with {label} — "
+        f"a real card written this way would reach git history unnoticed"
+    )
+
+
 def test_golden_corpus_is_discoverable() -> None:
     """Guards the discovery mechanism itself.
 
     A parametrized test over an empty list silently reports zero failures — this test
     exists so a broken glob pattern or an empty directory shows up as a real failure
     instead of a suspiciously short test run.
+
+    The floor tracks the corpus rather than sitting at its original value: a threshold left
+    far below the real count stops detecting anything short of near-total loss, which is
+    the same "green gate that inspects nothing" problem in miniature. Raise it when the
+    corpus grows; it is a ratchet, not a target.
     """
-    assert len(CASES) >= 20, (
-        f"expected at least 20 golden fixtures, found {len(CASES)} in {GOLDEN_DIR}"
+    assert len(CASES) >= 33, (
+        f"expected at least 33 golden fixtures, found {len(CASES)} in {GOLDEN_DIR}"
     )
 
 

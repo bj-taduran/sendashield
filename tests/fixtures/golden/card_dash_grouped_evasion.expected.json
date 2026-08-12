@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 128,
+      "end": 147,
+      "text": "5200-8282-8282-8210"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "5200-8282-8282-8210"
+  ],
+  "notes": "Card digits grouped with ASCII hyphens, which is how the number is printed on the card itself and therefore how people copy it. The span text and the leak check both use the hyphenated form because that is the exact string in the normalised text — normalise() does not remove grouping, so a detector has to strip separators before applying Luhn rather than getting a contiguous run handed to it"
+}

@@ -344,10 +344,27 @@ def _is_hidden_style(style: str) -> bool:
     return bool(_WHITE_TEXT_RE.search(style)) and not _BACKGROUND_COLOUR_RE.search(style)
 
 
-#: Whitespace between two digits, removed before scanning content that is about to be
-#: dropped. People group identifiers (`4242 4242 4242 4242`), and a grouped card contains
-#: no long digit run.
-_INTER_DIGIT_SPACE_RE = re.compile(r"(?<=\d)[^\S\n]+(?=\d)")
+#: Separators between digit *groups*, removed before scanning content that is about to be
+#: dropped: spaces (including NBSP), hyphens, dots. A grouped card contains no long digit
+#: run — `4242-4242-4242-4242` has a longest run of four — so without this the identifier
+#: scan below sees nothing.
+#:
+#: Hyphens and dots were missing initially, and the consequence was worse here than in the
+#: corpus-hygiene guard that had the same omission: a card hidden as
+#: `<div style="display:none">4242-4242-4242-4242</div>` was stripped correctly but raised
+#: **no anomaly**, and since L0 strips it, L1 never sees it either. The item then reports
+#: nothing found, with nothing recorded anywhere — the one outcome the anomaly exists to
+#: prevent, defeated by the way card numbers are printed on the cards themselves.
+#:
+#: Newlines are deliberately excluded (`[^\S\n]` rather than `\s`): dropped content can span
+#: lines, and a digit ending one line has no relationship to a digit starting the next.
+#:
+#: The sibling of this constant is `_INTER_DIGIT_SEPARATOR_RE` in
+#: `tests/test_golden_corpus.py`, which does the same job for the corpus-hygiene guard.
+#: They are deliberately separate — that one uses `\s` because it scans flat text where a
+#: line break inside a grouped number is plausible — but they share a failure mode, so a
+#: change to the character class in either is a reason to look at the other.
+_INTER_DIGIT_SEPARATOR_RE = re.compile(r"(?<=\d)(?:[^\S\n]|[-.])+(?=\d)")
 
 #: Identifier-*shaped*, not identifier-validated: an IBAN-like prefix, or any run of 9+
 #: digits (the shortest thing this project cares about — a 9-digit SSN — sets the floor).
@@ -1035,7 +1052,7 @@ class _HTMLTextExtractor(HTMLParser):
 
     def _scan_dropped(self, data: str, identifier_label: str, imperative_label: str) -> None:
         """Categorise text that is about to be discarded. Labels only, never the text."""
-        if _HIDDEN_IDENTIFIER_RE.search(_INTER_DIGIT_SPACE_RE.sub("", data)):
+        if _HIDDEN_IDENTIFIER_RE.search(_INTER_DIGIT_SEPARATOR_RE.sub("", data)):
             self.anomalies.add(identifier_label)
         if _HIDDEN_IMPERATIVE_RE.search(data):
             self.anomalies.add(imperative_label)

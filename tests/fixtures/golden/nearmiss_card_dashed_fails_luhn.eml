@@ -1,0 +1,15 @@
+From: service@ticketline.example
+To: kunde@example.com
+Subject: Ihre Buchungsreferenz
+Date: Sat, 15 Aug 2026 14:15:00 +0200
+Message-ID: <nearmiss_card_dashed_fails_luhn@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Guten Tag,
+
+Ihre Buchungsreferenz lautet 5555-5555-5555-4440. Bitte halten Sie
+diese bei Rueckfragen bereit.
+
+Ticketline Service

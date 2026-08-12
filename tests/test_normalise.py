@@ -1,10 +1,14 @@
 """Unit tests for sendashield.normalise, isolating one transformation at a time.
 
 The golden corpus (tests/test_golden_corpus.py) exercises normalise() end-to-end through
-realistic messages, but each fixture conflates several transforms at once and none of the
-20 fixtures in this batch use malformed HTML — that's exactly how the bug regression-tested
-in TestHtmlToText.test_unclosed_style_does_not_swallow_trailing_content below went
-unnoticed until a manual review after the corpus was already green.
+realistic messages, but each fixture conflates several transforms at once, and no fixture
+in it uses malformed HTML — every one is a well-formed message, because a corpus of
+deliberately broken markup would be testing the parser rather than the detection contract.
+That is exactly how the bug regression-tested in
+TestHtmlToText.test_unclosed_style_does_not_swallow_trailing_content went unnoticed until a
+manual review after the corpus was already green, and why the malformed-input cases
+(unclosed style blocks, unterminated hidden elements, mismatched nesting, truncated MIME)
+live here as unit tests instead.
 """
 
 from __future__ import annotations
@@ -438,15 +442,64 @@ class TestInvisibleContentAnomalies:
         assert "4242424242424242" not in result.text
         assert "html_comment:identifier_shaped" in result.anomalies
 
-    def test_grouped_identifier_in_dropped_comment_raises_anomaly(self) -> None:
-        # Digit grouping must not hide the shape — "4242 4242 4242 4242" contains no long
-        # digit run as written.
+    @pytest.mark.parametrize(
+        ("label", "grouped"),
+        [
+            ("plain", "4242424242424242"),
+            ("spaces", "4242 4242 4242 4242"),
+            ("non-breaking spaces", "4242 4242 4242 4242"),
+            ("hyphens", "4242-4242-4242-4242"),
+            ("dots", "4242.4242.4242.4242"),
+        ],
+    )
+    def test_grouped_identifier_in_dropped_comment_raises_anomaly(
+        self, label: str, grouped: str
+    ) -> None:
+        """Grouping must not hide the shape, in any separator people actually use.
+
+        Regression: hyphens and dots were missing from the separator class, so a card
+        written the way it is printed on the card itself raised nothing. Because L0 drops
+        the content and L1 therefore never sees it, that anomaly is the *only* record the
+        identifier existed — losing it means an item reports "nothing found" for a message
+        that contained a hidden card.
+        """
         raw = _eml(
             content_type="text/html; charset=utf-8",
             cte=None,
-            body=b"<p>visible</p><!-- card 4242 4242 4242 4242 -->",
+            body=f"<p>visible</p><!-- card {grouped} -->".encode(),
         )
         assert "html_comment:identifier_shaped" in normalise(raw).anomalies
+
+    @pytest.mark.parametrize(
+        ("label", "grouped"),
+        [
+            ("plain", "4242424242424242"),
+            ("spaces", "4242 4242 4242 4242"),
+            ("non-breaking spaces", "4242 4242 4242 4242"),
+            ("hyphens", "4242-4242-4242-4242"),
+            ("dots", "4242.4242.4242.4242"),
+        ],
+    )
+    def test_grouped_identifier_in_hidden_element_raises_anomaly(
+        self, label: str, grouped: str
+    ) -> None:
+        raw = _eml(
+            content_type="text/html; charset=utf-8",
+            cte=None,
+            body=f'<p>visible</p><div style="display:none">{grouped}</div>'.encode(),
+        )
+        assert "hidden_css:identifier_shaped" in normalise(raw).anomalies
+
+    def test_digits_across_a_line_break_are_not_joined(self) -> None:
+        # The separator class excludes newlines on purpose: a digit ending one line has no
+        # relationship to a digit starting the next, and joining them would manufacture
+        # identifiers out of unrelated short numbers.
+        raw = _eml(
+            content_type="text/html; charset=utf-8",
+            cte=None,
+            body=b"<p>visible</p><!-- order 12345\n67890 ref -->",
+        )
+        assert normalise(raw).anomalies == ()
 
     @pytest.mark.parametrize(
         "payload",

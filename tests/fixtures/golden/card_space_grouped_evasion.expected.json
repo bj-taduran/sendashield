@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 116,
+      "end": 135,
+      "text": "4000 0000 0000 0077"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "4000 0000 0000 0077"
+  ],
+  "notes": "Card digits grouped with plain ASCII spaces, the commonest way a card is written by hand. Distinct from card_nbsp_grouped_digits_evasion, which uses U+00A0: NFC leaves both alone, so a detector must tolerate ordinary and non-breaking spaces alike, and this pair is what proves the two cases are handled separately rather than one standing in for the other"
+}

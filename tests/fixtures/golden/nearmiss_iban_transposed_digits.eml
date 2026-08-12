@@ -1,0 +1,16 @@
+From: buchhaltung@lieferant-sued.example
+To: kreditoren@kunde.example
+Subject: Korrektur Bankverbindung
+Date: Sat, 15 Aug 2026 15:55:00 +0200
+Message-ID: <nearmiss_iban_transposed_digits@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Sehr geehrte Damen und Herren,
+
+in unserem letzten Schreiben war die Bankverbindung fehlerhaft
+erfasst: DE89730400440532013000. Wir melden uns mit der korrekten
+Angabe erneut.
+
+Buchhaltung Lieferant Sued

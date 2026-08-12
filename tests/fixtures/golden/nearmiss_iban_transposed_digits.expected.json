@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "DE89370400440532013000 with two adjacent digits transposed (37 -> 73), which is the ordinary human typo mod-97 exists to catch. Verified: mod-97 is False, correct check digits for this string would be 62. Distinct from nearmiss_reference_fails_iban_checksum, which uses an obviously wrong DE00 prefix — this one is well-formed in every respect except the arithmetic, so it fails only if mod-97 is genuinely computed. Being mod-97-invalid makes it provably not a real account"
+}

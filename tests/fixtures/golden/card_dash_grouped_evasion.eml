@@ -1,0 +1,15 @@
+From: receipts@northwind-tools.example
+To: alex@example.com
+Subject: Payment receipt for order NW-88231
+Date: Sat, 15 Aug 2026 10:02:00 +0200
+Message-ID: <card_dash_grouped_evasion@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hi Alex,
+
+Thanks for your payment. We charged the card ending in 8210
+(full number on file: 5200-8282-8282-8210) for order NW-88231.
+
+Northwind Tools

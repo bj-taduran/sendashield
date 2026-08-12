@@ -27,8 +27,12 @@ jobs:
       - name: ruff format --check
         run: uv run ruff format --check .
 
+      # Was `src/sendashield/detect src/sendashield/policy`, which by this point checked
+      # zero lines: both packages are still empty scaffolding, while normalise.py and
+      # ical.py — 1400 lines of parsing code — were not covered at all. A green gate that
+      # inspects nothing is worse than no gate, because it reads as assurance.
       - name: mypy
-        run: uv run mypy src/sendashield/detect src/sendashield/policy
+        run: uv run mypy src/sendashield tests
 
       - name: pytest
         run: uv run pytest

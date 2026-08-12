@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "Hyphen-grouped 16-digit booking reference that fails Luhn (verified: computed Luhn is False). The combination is the point — a detector that strips separators to find a 16-digit candidate but skips checksum validation fires here, and one that validates without stripping separators never forms a candidate at all. Only stripping AND validating gives the right answer. Being Luhn-invalid also makes the value provably not a real card"
+}

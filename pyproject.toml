@@ -34,9 +34,20 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 python_version = "3.12"
-mypy_path = "src"
+# "tests" is on the path so `from conftest import ...` resolves for mypy the way pytest
+# already resolves it at runtime. Without it, tests/test_network_blocked.py raised a
+# standing import-not-found error — and that test guards the outbound-network block, so it
+# is the last file in the repo that should be sitting behind a known type error.
+mypy_path = ["src", "tests"]
 explicit_package_bases = true
 warn_unused_configs = true
+
+# Strict everywhere in the package, not only on detect/ and policy/. CLAUDE.md names those
+# two because they are where correctness is hardest; it is not a licence for the rest to go
+# unchecked, and normalise.py is 1000+ lines of exactly the parsing code a type error would
+# hide in. The per-module override below stays because it is what CLAUDE.md asks for by
+# name, and so the requirement survives if this global setting is ever relaxed.
+strict = true
 
 [[tool.mypy.overrides]]
 module = ["sendashield.detect.*", "sendashield.policy.*"]
