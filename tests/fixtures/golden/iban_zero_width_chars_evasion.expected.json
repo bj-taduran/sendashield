@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "iban",
+      "start": 70,
+      "end": 92,
+      "text": "DE03200410610044556677"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "DE03200410610044556677"
+  ],
+  "notes": "IBAN digits interspersed with zero-width characters (ZWSP/ZWNJ/ZWJ/word-joiner); normalise() strips these (step 6), so the expected span is the clean, contiguous IBAN"
+}

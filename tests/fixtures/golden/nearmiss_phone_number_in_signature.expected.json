@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "Ordinary phone numbers in a billing-adjacent context — no card or IBAN present at all. Numbers are from +49 30 23125 xx, the range Germany reserves for drama and examples, so they are provably fictional without needing an allowlist entry"
+}

@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "German internal company announcement, no identifiers — catches over-masking, exercises umlaut handling"
+}

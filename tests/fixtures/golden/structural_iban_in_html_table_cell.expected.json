@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "iban",
+      "start": 147,
+      "end": 169,
+      "text": "DE51300209000987654321"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "DE51300209000987654321"
+  ],
+  "notes": "IBAN inside a <td> cell of an HTML invoice table, single-part text/html message"
+}

@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 79,
+      "end": 95,
+      "text": "5105105105105100"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "5105105105105100"
+  ],
+  "notes": "multipart/alternative with only a text/html part (no text/plain) — exercises get_body() falling through to html and the HTML-to-text extraction path"
+}

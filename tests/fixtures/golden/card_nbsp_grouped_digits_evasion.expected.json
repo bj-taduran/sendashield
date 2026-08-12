@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 79,
+      "end": 98,
+      "text": "4000 0025 0000 3155"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "4000 0025 0000 3155"
+  ],
+  "notes": "Card digits grouped with U+00A0 non-breaking spaces (not stripped by normalise() — NFC leaves NBSP alone, see normalise.py step 7); expected span text and the leak check both use the NBSP-grouped form since that's the exact string present in the normalised text — a future detector still has to recognise it as CARD_NBSP despite the NBSPs"
+}

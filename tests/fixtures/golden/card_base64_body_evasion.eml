@@ -1,0 +1,12 @@
+From: ops@vendor-internal.example
+To: finance@vendor-internal.example
+Subject: Renewal card on file
+Date: Sat, 08 Aug 2026 10:43:00 +0200
+Message-ID: <card_base64_body_evasion@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+SGkgUHJpeWEsCgpRdWljayBub3RlIGZvciB0aGUgZmlsZSDigJQgdGhlIGNhcmQgdXNlZCBmb3Ig
+dGhlIEp1bHkgcmVuZXdhbCB3YXMKNDAwMDA1NjY1NTY2NTU1NiwgZXhwaXJpbmcgMDMvMjkuCgpU
+aGFua3MsCk9wcwo=

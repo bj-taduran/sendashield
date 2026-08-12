@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "16-digit order number in card-length position but fails Luhn — this is Stripe's documented incorrect_number test card, which their docs state fails the Luhn check; must not be flagged as credit_card"
+}

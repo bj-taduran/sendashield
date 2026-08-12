@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "German invoice number starting with 'DE-' plus digits, superficially IBAN-like but wrong shape (hyphens, wrong length, not the IBAN alphabet) — must not fire"
+}

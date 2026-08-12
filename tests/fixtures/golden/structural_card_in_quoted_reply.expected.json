@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 192,
+      "end": 208,
+      "text": "4000000000009995"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "4000000000009995"
+  ],
+  "notes": "Card number only present inside '>'-quoted reply text of an earlier message, not the new reply itself"
+}

@@ -1,0 +1,19 @@
+From: accounts@fenwick-consulting.example
+To: payables@clientco.example
+Subject: =?utf-8?q?Invoice_2026-0714_=E2=80=94_remittance_details?=
+Date: Thu, 06 Aug 2026 10:29:00 +0200
+Message-ID: <en_iban_invoice_remittance@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hi Dana,
+
+Please find our remittance details for invoice 2026-0714 below.
+
+IBAN: DE89370400440532013000
+BIC: COBADEFFXXX
+Amount due: EUR 4,820.00, due 18 August 2026.
+
+Best regards,
+Fenwick Consulting Accounts

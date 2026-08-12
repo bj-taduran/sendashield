@@ -1,0 +1,15 @@
+From: orders@cedarandpine.example
+To: customer@example.com
+Subject: Your order #4242424242424241 is confirmed
+Date: Wed, 12 Aug 2026 11:11:00 +0200
+Message-ID: <nearmiss_order_number_fails_luhn@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hi Sam,
+
+Thanks for your order! Your order number is 4242424242424241.
+We'll email you again once it ships.
+
+Cedar & Pine

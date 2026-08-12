@@ -1,0 +1,18 @@
+From: bestellung@moebelhaus-krause.example
+To: k.fischer@example.com
+Subject: =?utf-8?q?Ihre_Bestellbest=C3=A4tigung_Nr=2E_88213?=
+Date: Wed, 05 Aug 2026 10:22:00 +0200
+Message-ID: <de_card_bestellbestaetigung@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Guten Tag Frau Fischer,
+
+vielen Dank für Ihre Bestellung. Der Betrag von 349,00 EUR wurde von
+folgender Karte abgebucht: 5555555555554444 (gültig bis 11/27).
+
+Ihre Bestellung wird in 3-5 Werktagen versendet.
+
+Freundliche Grüße
+Möbelhaus Krause

@@ -1,0 +1,10 @@
+From: buchhaltung@stahlbau-weber.example
+To: einkauf@kunde.example
+Subject: =?utf-8?q?Ihre_Rechnung_f=C3=BCr_August_2026?=
+Date: Sat, 22 Aug 2026 12:21:00 +0200
+Message-ID: <structural_iban_in_html_table_cell@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><body><p>Sehr geehrte Damen und Herren,</p><p>anbei die Rechnungsdetails:</p><table><tr><td>Rechnungsnummer</td><td>2026-1187</td></tr><tr><td>Betrag</td><td>1.284,50 EUR</td></tr><tr><td>IBAN</td><td>DE51300209000987654321</td></tr></table><p>Vielen Dank.</p></body></html>

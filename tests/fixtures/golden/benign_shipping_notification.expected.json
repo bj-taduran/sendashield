@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "Shipping notification with a carrier tracking number (18-char alnum, wrong shape for card or IBAN)"
+}

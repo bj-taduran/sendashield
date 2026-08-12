@@ -1,0 +1,18 @@
+From: billing@northwind-cloud.example
+To: ap@customer.example
+Subject: Your Northwind Cloud invoice #INV-30291 has been paid
+Date: Tue, 04 Aug 2026 10:15:00 +0200
+Message-ID: <en_card_saas_invoice_payment@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hi team,
+
+This confirms payment of $249.00 for invoice INV-30291.
+
+Card charged: 4242424242424242, exp 09/28.
+
+Thanks for being a Northwind Cloud customer.
+
+Northwind Cloud Billing

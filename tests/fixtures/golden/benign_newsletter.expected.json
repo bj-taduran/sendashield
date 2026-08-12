@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "Marketing newsletter, no identifiers of any kind — catches over-masking"
+}

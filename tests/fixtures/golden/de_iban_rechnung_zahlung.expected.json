@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "iban",
+      "start": 138,
+      "end": 160,
+      "text": "DE94500700100123456789"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "DE94500700100123456789"
+  ],
+  "notes": "German invoice email, IBAN in plain body, realistic straightforward case"
+}

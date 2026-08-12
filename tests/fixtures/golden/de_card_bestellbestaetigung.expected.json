@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 156,
+      "end": 172,
+      "text": "5555555555554444"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "5555555555554444"
+  ],
+  "notes": "German order confirmation, card number in plain body, realistic straightforward case"
+}

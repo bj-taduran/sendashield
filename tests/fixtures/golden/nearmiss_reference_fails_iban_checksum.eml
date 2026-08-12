@@ -1,0 +1,14 @@
+From: support@crm-vendor.example
+To: admin@customer.example
+Subject: Your support reference number
+Date: Thu, 13 Aug 2026 11:18:00 +0200
+Message-ID: <nearmiss_reference_fails_iban_checksum@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hi,
+
+Your case reference is DE00123456780987654321. Quote this if you contact us again.
+
+CRM Vendor Support

@@ -1,0 +1,19 @@
+From: buchhaltung@stahlbau-weber.example
+To: einkauf@kunde.example
+Subject: =?utf-8?q?Rechnung_2026-4471_=E2=80=94_Zahlungsinformationen?=
+Date: Fri, 07 Aug 2026 10:36:00 +0200
+Message-ID: <de_iban_rechnung_zahlung@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Sehr geehrte Damen und Herren,
+
+anbei die Zahlungsinformationen zu Rechnung 2026-4471.
+
+IBAN: DE94500700100123456789
+BIC: GENODEF1M04
+Betrag: 12.480,00 EUR, faellig am 20.08.2026.
+
+Vielen Dank
+Stahlbau Weber, Buchhaltung

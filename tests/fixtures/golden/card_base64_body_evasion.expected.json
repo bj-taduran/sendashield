@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "credit_card",
+      "start": 98,
+      "end": 114,
+      "text": "4000056655665556"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "4000056655665556"
+  ],
+  "notes": "Entire body is base64-encoded (Content-Transfer-Encoding: base64); card only visible after CTE decode"
+}

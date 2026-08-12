@@ -1,0 +1,15 @@
+{
+  "expected_spans": [
+    {
+      "detector": "iban",
+      "start": 193,
+      "end": 215,
+      "text": "DE73600501010009876543"
+    }
+  ],
+  "expected_action": "mask",
+  "must_not_appear_in_output": [
+    "DE73600501010009876543"
+  ],
+  "notes": "IBAN placed in an email signature block below a '--' delimiter, not the main message body"
+}

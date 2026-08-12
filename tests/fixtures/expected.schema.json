@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sendashield.internal/schemas/golden-expected.json",
+  "title": "Golden corpus expected-result file",
+  "description": "Format for tests/fixtures/golden/<case>.expected.json, documented in docs/build-plan.md Phase 1. Validated by tests/test_golden_corpus.py against a small hand-rolled validator (see that file for why this isn't the `jsonschema` package) — this document is the single source of truth either way.",
+  "type": "object",
+  "required": ["expected_spans", "expected_action", "must_not_appear_in_output", "notes"],
+  "additionalProperties": false,
+  "properties": {
+    "expected_spans": {
+      "type": "array",
+      "description": "Spans a detector is expected to find, in the coordinate system src/sendashield/normalise.py defines. Empty for benign and near-miss fixtures.",
+      "items": {
+        "type": "object",
+        "required": ["detector", "start", "end", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "detector": {
+            "type": "string",
+            "enum": ["credit_card", "iban", "steuer_idnr", "secret", "ssn", "versicherungsnummer"],
+            "description": "DETECTOR_ID of the detector expected to find this span. Matches the order in docs/build-plan.md Phase 2. This phase (build-plan Phase 1) only uses credit_card and iban — no detector code exists yet to produce the others."
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Inclusive start offset into normalise(raw_message).text."
+          },
+          "end": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "description": "Exclusive end offset into normalise(raw_message).text. Must be > start."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The exact substring normalised_text[start:end] must equal. This is the self-consistency check the golden test enforces."
+          }
+        }
+      }
+    },
+    "expected_action": {
+      "type": "string",
+      "enum": ["allow", "mask", "quarantine"],
+      "description": "The policy action this item should resolve to once a pipeline exists. allow <-> mask <-> quarantine per CLAUDE.md invariant 4 (escalation only) — this field records the target, not an assertion this phase's tests can check yet. Every hit fixture in the Phase 1 batch is 'mask', which is correct for a single checksum-validated identifier in an otherwise legitimate business message: there is a specific span to replace, so withholding the whole item would be over-masking. 'quarantine' fixtures arrive with the attachment batch (unscannable content — nothing to mask, so nothing may pass) and the L3 batch at M4 (parse failure or timeout, which per CLAUDE.md invariant 10 quarantines with no lenient retry). The absence of a quarantine case here is a property of this batch, not of the schema."
+    },
+    "must_not_appear_in_output": {
+      "type": "array",
+      "description": "Literal strings that must never appear in a masked or quarantined item's output. Empty for allow-action fixtures. Each entry must also APPEAR IN THE RAW NORMALISED TEXT of the paired message — test_golden_fixture_is_internally_consistent enforces this, and the check is not redundant with the leak assertion it looks like a duplicate of. Reason: a leak assertion over a string the message never contained passes trivially, forever, while looking exactly like protection. That is the failure mode this project exists to prevent, reproduced inside its own test suite — a fixture would claim to guard a leak that could not occur. Requiring presence in the source makes the assertion falsifiable: the string is there before filtering, so its absence afterwards means filtering did something. Do not remove this constraint as a duplicate of the span check; spans are what a detector should find, this is what must not survive, and a fixture may legitimately declare the second without the first.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "notes": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-line human-readable description of what the fixture tests and why. Required — this is what a reviewer reads instead of the raw message."
+    }
+  }
+}

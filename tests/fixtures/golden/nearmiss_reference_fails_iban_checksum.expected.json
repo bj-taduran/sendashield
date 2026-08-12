@@ -1,0 +1,6 @@
+{
+  "expected_spans": [],
+  "expected_action": "allow",
+  "must_not_appear_in_output": [],
+  "notes": "22-character alphanumeric string, IBAN-shaped (DE + 20 chars) but fails mod-97 (correct check digits would be 10, this uses 00) — must not be flagged as iban"
+}

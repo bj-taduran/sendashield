@@ -1,0 +1,17 @@
+From: orders@cedarandpine.example
+To: sam@example.com
+Subject: Your order #58213 has shipped
+Date: Tue, 18 Aug 2026 11:53:00 +0200
+Message-ID: <benign_shipping_notification@sendashield.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hi Sam,
+
+Good news — your order #58213 has shipped! Tracking number:
+1Z999AA10123456784.
+
+Expected delivery: Thursday, August 13.
+
+Thanks for shopping with Cedar & Pine.

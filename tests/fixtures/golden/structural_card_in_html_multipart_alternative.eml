@@ -1,0 +1,14 @@
+From: receipts@legacy-billing.example
+To: jordan@example.com
+Subject: Payment confirmation
+Date: Sun, 23 Aug 2026 12:28:00 +0200
+Message-ID: <structural_card_in_html_multipart_alternative@sendashield.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="FIXTURE_BOUNDARY"
+
+--FIXTURE_BOUNDARY
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><body><p>Hi Jordan,</p><p>Thanks for your payment. Your card on file is 5105105105105100.</p><p>Cheers,<br>Legacy Billing</p></body></html>
+--FIXTURE_BOUNDARY--
