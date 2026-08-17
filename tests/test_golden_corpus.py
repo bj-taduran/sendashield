@@ -1,7 +1,9 @@
 """Golden corpus validator — Phase 1 (`docs/build-plan.md`).
 
-No detector exists yet. This file checks that fixtures are internally consistent, not
-that any detector finds what they claim:
+This file checks that fixtures are internally consistent — *not* that any detector finds
+what they claim, which is `tests/test_golden_detection.py`. The split is deliberate: a
+fixture that disagrees with itself and a detector that disagrees with a fixture are
+different failures, and reading one message should not require ruling out the other.
 
 1. Every `.expected.json` validates against `tests/fixtures/expected.schema.json`.
 2. `normalise()` on the paired `.eml` produces text where every declared span offset
@@ -149,6 +151,11 @@ DECLARED_SYNTHETIC_IDENTIFIERS = frozenset(
         "DE73600501010009876543",
         "DE51300209000987654321",
         "DE00123456780987654321",  # deliberately checksum-invalid near-miss
+        # Stripe test cards that only ever appear in content L0 strips, so they are visible
+        # to the raw half of the hygiene scan and never to the normalised half. Declared for
+        # exactly the same reason as everything above — the guard must not have to trust
+        # that a value inside a display:none block is safe.
+        "378282246310005",  # Amex, injection_hidden_css_card_display_none
         # Non-identifier long tokens that legitimately appear in benign fixtures
         "1Z999AA10123456784",  # carrier tracking number, benign_shipping_notification
     }
@@ -164,6 +171,38 @@ def _identifier_shaped_tokens(text: str) -> set[str]:
     return set(_IDENTIFIER_SHAPED_RE.findall(text)) | set(
         _IDENTIFIER_SHAPED_RE.findall(collapse_digit_separators(text, across_lines=True))
     )
+
+
+#: Quoted-printable soft line break: `=` at end of line, joining a token split mid-way. The
+#: raw scan below has to undo these itself, because it deliberately does not go through
+#: `normalise()` — without it, `iban_qp_soft_linebreak_evasion` reports the fragment
+#: `100567891234` as an undeclared identifier, which is noise rather than a finding.
+_QP_SOFT_BREAK_RE = re.compile(r"=\r?\n")
+
+
+def _hygiene_scan_sources(raw_path: Path) -> list[str]:
+    """Every representation of a fixture the identifier guard must look at.
+
+    **Two sources, because neither alone is sufficient, and the gap between them is a real
+    one that this corpus demonstrated.**
+
+    - The **normalised** text sees through transfer encoding: a card pasted into a base64
+      body is invisible to a plain read of the `.eml` but plain in `normalise()`'s output.
+    - The **raw** text sees content that L0 deliberately removes. `normalise()` strips
+      `display:none` blocks and HTML comments *before* returning, so an identifier hidden
+      in one never appears in the normalised text at all — and the guard, scanning only
+      that, reported the fixture clean. A real card hidden that way would have reached git
+      history unnoticed, which is the permanent mistake this whole check exists to prevent.
+      Found by `injection_hidden_css_card_display_none`, which is exactly such a fixture.
+
+    The two cover each other's blind spot: hidden content is not transfer-encoded in any
+    fixture that could hide it (the `expected_stripped` rule forbids base64 and
+    quoted-printable there), and encoded content is not hidden. latin-1 because it maps
+    every byte and cannot raise — this is a net, not a parser.
+    """
+    normalised = _normalise_fixture(raw_path).text
+    raw = _QP_SOFT_BREAK_RE.sub("", raw_path.read_bytes().decode("latin-1"))
+    return [normalised, raw]
 
 
 def _raw_fixture_path(expected_path: Path) -> Path:
@@ -198,6 +237,12 @@ def _normalise_fixture(raw_path: Path) -> NormalisedText:
     return events[0]
 
 
+def load_expected(expected_path: Path) -> dict[str, Any]:
+    """Read a fixture's expectations. Public: `test_golden_detection.py` reads them too."""
+    parsed: dict[str, Any] = json.loads(expected_path.read_text(encoding="utf-8"))
+    return parsed
+
+
 def _discover_cases() -> list[Path]:
     return sorted(GOLDEN_DIR.glob("*.expected.json"))
 
@@ -229,6 +274,41 @@ def test_hygiene_guard_sees_through_every_grouping_style(label: str, grouped: st
     assert undeclared, (
         f"hygiene guard did not fire on an undeclared card grouped with {label} — "
         f"a real card written this way would reach git history unnoticed"
+    )
+
+
+def test_hygiene_guard_sees_an_identifier_hidden_from_normalisation(tmp_path: Path) -> None:
+    """The guard must fire on a card L0 strips before the normalised text ever exists.
+
+    This is the blind spot `_hygiene_scan_sources` was widened to close, and it was a live
+    one: `normalise()` removes `display:none` subtrees, so scanning only its output reported
+    a fixture containing an undeclared card as clean. A real card pasted into a hidden
+    preheader — where marketing mail routinely puts content — would have been committed
+    silently. Written as a test rather than a comment because the previous behaviour looked
+    exactly like this one from the outside: green.
+
+    Uses an undeclared Luhn-valid test card, so it fails if either half of the scan is
+    dropped or the declaration list is widened to cover it by accident.
+    """
+    hidden_card = "4111111111111111"
+    assert hidden_card not in DECLARED_SYNTHETIC_IDENTIFIERS
+    fixture = tmp_path / "hidden.eml"
+    fixture.write_bytes(
+        b"From: a@example.com\nTo: b@example.com\nSubject: Test\n"
+        b"MIME-Version: 1.0\nContent-Type: text/html; charset=utf-8\n\n"
+        b'<html><body><div style="display:none">card ' + hidden_card.encode() + b"</div>"
+        b"<p>Visible text only.</p></body></html>\n"
+    )
+
+    assert hidden_card not in _normalise_fixture(fixture).text, (
+        "setup: L0 must strip the card, or this test is not exercising the blind spot"
+    )
+    found = set().union(
+        *(_identifier_shaped_tokens(source) for source in _hygiene_scan_sources(fixture))
+    )
+    assert hidden_card in found, (
+        "hygiene guard did not see a card hidden in a display:none block — a real one "
+        "pasted into a hidden preheader would reach git history unnoticed"
     )
 
 
@@ -281,14 +361,17 @@ def test_corpus_contains_only_declared_synthetic_identifiers(expected_path: Path
     """No fixture may contain an identifier-shaped token that isn't declared synthetic.
 
     Guards the corpus against real data, which for this project is a repository-permanent
-    mistake rather than a test failure. Runs over the normalised text so it sees through
-    base64 and quoted-printable encoding — a real card pasted into a base64 body would be
-    invisible to a plain grep of the .eml.
+    mistake rather than a test failure. Runs over both the normalised text and the raw
+    bytes — see `_hygiene_scan_sources` for why neither is enough on its own.
     """
     raw_path = _raw_fixture_path(expected_path)
-    text = _normalise_fixture(raw_path).text
 
-    undeclared = _identifier_shaped_tokens(text) - DECLARED_SYNTHETIC_IDENTIFIERS
+    undeclared = (
+        set().union(
+            *(_identifier_shaped_tokens(source) for source in _hygiene_scan_sources(raw_path))
+        )
+        - DECLARED_SYNTHETIC_IDENTIFIERS
+    )
     assert not undeclared, (
         f"{raw_path.name} contains identifier-shaped token(s) not declared synthetic: "
         f"{sorted(undeclared)}. If this is a new synthetic value, add it to "
@@ -420,7 +503,7 @@ def consistency_errors(
 )
 def test_golden_fixture_is_internally_consistent(expected_path: Path) -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    expected = load_expected(expected_path)
 
     schema_errors = _validate_schema(expected, schema)
     assert not schema_errors, f"{expected_path.name} violates schema: {schema_errors}"

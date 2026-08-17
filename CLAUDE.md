@@ -63,6 +63,78 @@ user asked for it. Say so and stop.
     the entire life of the project so far. Same shape every time — a green light for work
     not done. A silent leak looks exactly like success, and so does a silent non-check.
 
+13. **A guard on a transformed view must also be checked against the raw form**, or state
+    in writing why it need not be. When a check runs on the output of a transformation —
+    parsed, normalised, stripped, decoded — ask what the transformation *removed*, because
+    that is precisely what the check can no longer see, and its silence about it is
+    indistinguishable from a pass.
+
+    **The worked example — `_INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE`.** Read it in full,
+    because every element of the pattern is visible in it and none of them looked wrong.
+
+    `normalise.py` exports one definition of what a separator is, and says so emphatically
+    in a comment, because the class had already been written out twice with the ASCII hyphen
+    missing from both and fixed in only one. So the lesson was learned, documented, and
+    apparently applied. But two compiled regexes sat below that definition:
+
+    ```python
+    INTER_DIGIT_SEPARATOR = r"(?:[^\S\n]|[-.])"
+
+    _INTER_DIGIT_SEPARATOR_RE = re.compile(rf"(?<=\d){INTER_DIGIT_SEPARATOR}+(?=\d)")
+    _INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE = re.compile(r"(?<=\d)[\s\-.]+(?=\d)")   # ← copy
+    ```
+
+    The first derives. The second restates — the same class again, by hand, differing only
+    by newlines. It was *correct* while both said "whitespace, hyphen, dot", so nothing was
+    broken and no test could fail. It was a copy waiting for the original to change.
+
+    Then Unicode hyphen homoglyphs (`U+FF0D` and friends) were added to close a live evasion.
+    They went into the shared definition, both detectors were fixed by that one edit, and
+    every detector test went green. **The copy silently kept the ASCII-only class.** Its only
+    caller is the corpus-hygiene guard — the check that keeps real customer data out of the
+    fixtures — so the consequence was that a real card grouped with `U+FF0D` could have been
+    committed unflagged. A guard covering less than it claimed, produced by fixing the thing
+    it was supposed to track, with a green suite throughout.
+
+    Note what did *not* catch it: the emphatic comment, the earlier fix, the passing tests,
+    and the code review that read the new homoglyphs and found them correct — they *were*
+    correct. Only asking "what else claims to know this, and did it get the update?" caught
+    it. Both variants are now derived from the one fragment, and a test compares them
+    **against each other** rather than against a literal list, so it cannot be satisfied by
+    updating a copy. Un-deriving the second turns eight tests red.
+
+    Three more instances of the same shape, told briefly: an `.ics` file that normalised to
+    `""` so a detector scanned nothing and the item was allowed; a CI `mypy` step pointed at
+    two empty packages, reporting success over zero lines for the project's whole life; and a
+    corpus-hygiene guard scanning only normalised text, so a card in a `display:none` block —
+    content L0 strips *by design* — was invisible to the exact check meant to keep real data
+    out of the repo.
+
+    In practice: scan both views and union the results; pin the union with a test that fails
+    if either half is dropped; and when one definition is shared, derive every variant from
+    it and assert the variants against each other, never against a written-out list.
+
+14. **Pin a known limitation with a test, not a comment.** A gap you have decided not to fix
+    gets a real, passing test in `TestKnownLimitations` (or a named class of the same kind)
+    that *demonstrates* the current behaviour — `assert detect(payload) == []` — with a
+    docstring saying why it is not fixed and what would close it.
+
+    This is invariant 12 applied to limitations instead of guards. A comment describing a
+    gap cannot be falsified, ages silently, and survives the gap being fixed *or* getting
+    worse. A test tracks reality: it fails the moment behaviour changes in either direction,
+    so closing the gap is a visible edit that flips an assertion rather than a comment
+    nobody deletes.
+
+    Two rules that make the difference between this and theatre:
+
+    - **Assert the miss, not a tautology.** The test must exercise the real code path and
+      encode the actual defect, so it goes red when the gap closes.
+    - **A limitation with a scheduled fix carries the deadline in the test docstring and in
+      `docs/architecture.md`.** A test name is not a schedule. If a gap matters enough to
+      pin, it matters enough to say where it is tracked — and if it is a security gap, it
+      belongs in §10 with the rest of the threat model, where a reader will find it without
+      grepping the suite.
+
 ## Stack
 
 - Python 3.12, single process, single container
