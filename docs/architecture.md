@@ -11,8 +11,8 @@
 | 1 | What this is |
 | 2 | Deployment model |
 | 3 | Provider abstraction |
-| 4 | Detection pipeline — layers, invariants, attachment handling, **L3 classifier spec** |
-| 5 | Policy model — actions, sensitivity defaults, OAuth posture, tool routing |
+| 4 | Detection pipeline — layers, invariants, **L1 candidate selection**, attachment handling, **L3 classifier spec** |
+| 5 | Policy model — actions, **what policy may never configure**, sensitivity defaults, OAuth posture, tool routing |
 | 6 | MCP tool surface — the security boundary |
 | 7 | Reversible masking and the write path |
 | 8 | Data handling — retention, **capture sessions** |
@@ -189,6 +189,87 @@ Merge · dedupe · longest-span-first · policy resolution
 3. **Escalation only.** L3 may move `allow → mask → quarantine`. Never the reverse.
 4. **Unknown format = quarantine.** Encrypted body, unsupported MIME type, undecodable
    attachment → withhold, don't guess.
+
+### L1 candidate selection — group alignment, and the gap it leaves
+
+Every L1 detector faces the same question before its checksum ever runs: *given a run of
+digits and separators, which sub-strings do I hand to the checksum?* The checksum is exact;
+the candidate rule is not, and it is where the false positives and the misses both come
+from. It is written down here rather than in one detector because `credit_card` (Luhn),
+`iban` (mod-97) and `steuer_idnr` all face it identically, and the wrong answer is the
+attractive one.
+
+**A checksum is not a filter.** Luhn passes one random number in ten and mod-97 one in
+ninety-seven. Feed a checksum enough candidates and it will confirm one. The candidate rule
+is therefore load-bearing security logic, not a parsing detail.
+
+Three strategies were implemented and measured against the golden corpus:
+
+| Strategy | Rule | Result |
+|---|---|---|
+| **Sliding window** | every 13–19 digit window at every offset | Rejected — see below |
+| **Maximal run only** | collapse each run, check it once | Rejected — misses real cards |
+| **Group-aligned** ✅ | every contiguous run of *whole* groups | Adopted |
+
+**Sliding windows are the intuitive choice and are catastrophically wrong.** They look more
+thorough. Measured against the corpus, arbitrary windows fire inside *every* IBAN fixture,
+and — worse — find checksum-passing windows inside the Luhn-failing near-misses, defeating
+the exact arithmetic those fixtures exist to prove. A 20-digit German IBAN contains, on
+average, several Luhn-passing 16-digit windows. Concretely, `de_iban_rechnung_zahlung`
+yields `4500700100123456`: sixteen digits, Luhn-valid, leading `4` — a flawless Visa number
+that is not a card at all, manufactured entirely out of an account number.
+
+**Maximal-run-only misses real cards.** A space and a dot are both separators, so
+`4242424242424242 349.00` — a card and a price — is one 21-digit run, out of card range,
+and yields nothing. That is a leak.
+
+**Group alignment** takes every contiguous run of whole groups: the whole run, and any run
+of complete groups inside it. Cutting a group in half is what invents identifiers that are
+not there; whole groups are what actually occurs in real text. It finds the card next to the
+price, and returns nothing for `DE89370400440532013000` (one group, twenty digits, out of
+range).
+
+Its cost is over-masking on ragged grouping: `0000 0000 1111 3388 1` surfaces its valid
+16-digit prefix. Miss-avoidance is preferred to over-masking, per `CLAUDE.md`. Both
+behaviours are pinned by name in `tests/test_credit_card.py`.
+
+#### The residual gap: an unseparated over-length run
+
+Group alignment resolves candidates at separator boundaries, so **a run with no separators
+at all has exactly one group and admits no sub-candidate.** A card concatenated directly
+against other digits is therefore not found:
+
+```
+4242424242424242123456   →  no detection   (22 digits, one group)
+4242424242424242349      →  no detection   (19 digits, one group, Luhn fails as a whole)
+4242424242424242 349.00  →  detected       (two groups — the card is the first)
+```
+
+This is a real miss and it is the same shape as the one group alignment was adopted to fix.
+**It is not closable by sub-windowing, and the reason is worth stating precisely: the false
+positive and the true positive are the same string.** "A Luhn-valid 16-digit window inside an
+unseparated 20+ digit run" describes both the card hidden in a blob and the phantom Visa
+inside every German IBAN. No rule reading only that run can separate them.
+
+Measured over the corpus: of the nine unseparated over-length runs present, all nine are
+IBANs or IBAN near-misses, eight contain at least one Luhn-passing window, and three contain
+one that also satisfies a strict major-issuer prefix-and-length table. **Adding an IIN check
+does not rescue sub-windowing** — it drops the count from eight to three, and those three are
+a clean Visa and a clean Mastercard sitting inside real account numbers. Trading eight false
+positives for three is not a fix.
+
+The gap is pinned in `tests/test_credit_card.py::TestKnownLimitations`, and L2/L3 are the
+layers expected to catch it.
+
+**Where the real fix lives — cross-detector, not in `credit_card`.** The information that
+resolves the ambiguity is not in the run; it is in *another detector's verdict*. Once `iban`
+exists, a run that mod-97 validates is known to be an account number, and is therefore known
+not to contain a card. Sub-windowing could then be applied to the residue — runs claimed by
+no other L1 detector — with an IIN check to keep the near-misses quiet. That is a merge-step
+capability, it belongs after the L1 set is complete, and **it must not be built
+speculatively inside one detector**: a detector that sub-windows on its own has no way to
+know what else claimed the text, which is precisely the state that produces the phantom Visa.
+Anyone implementing this must re-run the measurement above rather than assume it still holds.
 
 ### Attachment handling — an L0 precondition
 
@@ -451,6 +532,31 @@ report:
 
 Masking preserves utility — an email with a masked card number is still triageable.
 Quarantine exists for the cases where masking is meaningless.
+
+### What policy may never configure
+
+The schema above is a **closed** set of knobs, and one class of field is permanently
+excluded from it: **nothing in policy, in `DetectorConfig`, or in any future per-scan
+configuration may weaken a checksum.**
+
+No `require_luhn: false`. No `min_digits` override. No `skip_checksum`. No per-detector
+disable reachable from anything a model can influence. `CLAUDE.md` invariant 3 makes an L1
+detection absolute — a configuration field able to turn the arithmetic off would make it
+negotiable, and would do so through exactly the surface (`purpose`, tool arguments, a
+policy file an assistant was asked to edit) that invariant 7 exists to keep narrow.
+
+Note what `skip_layers` in the example above does and does not do: it may skip L2 and L3 for
+performance, and **L1 still runs**. That asymmetry is the rule in miniature — the
+probabilistic layers are tunable, the deterministic one is not.
+
+The only shape a future detector-configuration field may take is one that can **only
+escalate**: a threshold that adds detections, never one that removes them. A field failing
+that test is a bug in the schema, not a feature request.
+
+This is stated here, in the policy schema, rather than only in the `DetectorConfig`
+docstring, because the docstring is invisible to whoever adds the second knob — and by the
+time five detectors have copied the signature, the prohibition needs to live where the
+schema is designed, not where one module happens to implement it.
 
 ### OAuth posture — why per-user clients are load-bearing
 
@@ -998,9 +1104,44 @@ ecosystem.
   practical failure mode and belongs in setup as a blocking step, not a footnote.
 - **Detection error.** False negatives are inherent. The promise is reduction, not
   certainty, and the README must say so plainly.
+- **A card concatenated against other digits with no separator at all.** `OPEN`, scheduled —
+  see below. `4242424242424242123456` is one unseparated run and `credit_card` returns
+  nothing for it.
 - **The user pasting content manually.**
 - **Social engineering via the model** (see `in_band` above).
 - **A compromised user instance.** Self-hosting moves the risk; it doesn't remove it.
+
+#### Open detection gap: the unseparated over-length run
+
+**Status: OPEN. Closes or is formally accepted at the Phase 2 merge session — see §15.**
+Recorded here, in the threat model, rather than only in a test name, because a known miss in
+a security product is a threat-model fact and a reader of §10 must not have to grep the test
+suite to find it.
+
+`credit_card` resolves candidates at separator boundaries (§4, "L1 candidate selection"), so
+a run with **no separators at all** has one group and admits no sub-candidate. A card
+concatenated directly against other digits is therefore not detected:
+
+```
+4242424242424242123456   →  no detection
+4242424242424242 349.00  →  detected (two groups)
+```
+
+Sub-windowing the run is the obvious fix and was measured and rejected: **the false positive
+and the true positive are the same string.** Of the nine unseparated over-length runs in the
+golden corpus, all nine are IBANs or IBAN near-misses; eight contain a Luhn-passing window,
+and three contain one that also satisfies a strict issuer prefix-and-length table — including
+a flawless 16-digit Visa (`4500700100123456`) built entirely out of a German account number.
+Sub-windowing would fire on eight legitimate IBAN fixtures and defeat the near-misses whose
+purpose is to prove the checksum. An IIN table takes eight false positives to three, which is
+not a fix.
+
+The information that resolves the ambiguity is not in the run — it is in another detector's
+verdict on the same text, which no single detector has. That makes it a **merge-step**
+capability and it must not be built speculatively inside `credit_card`.
+
+Until it closes, the honest statement of the gap is: a card written adjacent to other digits
+with no separator is not detected at L1, and L2/L3 are the layers expected to catch it.
 
 ### Prompt injection — a second, independent value proposition
 
@@ -1314,6 +1455,26 @@ OAuth 2.1 MCP endpoint, minimal UI, Docker. **Attachment text extraction** (plai
 OOXML, and PDFs with a text layer); anything without a text layer is quarantined with
 reason `attachment_not_scannable` or `attachment_undecodable`. Goal: one end-to-end filtered
 tool call from claude.ai.
+
+*Mandatory acceptance criterion of the Phase 2 merge session (`detect/pipeline.py`)* — the
+last item in Phase 2, and the point at which one detector can finally see another's verdict:
+
+> **The unseparated over-length run (§10) must be resolved or formally accepted. It may not
+> pass in silence.** Exactly one of:
+>
+> 1. **Solved.** The merge step sub-windows the *residue* — runs claimed by no other L1
+>    detector — with an issuer prefix-and-length check, and ships with a golden fixture
+>    reproducing the exact measured case: a card concatenated against other digits, plus the
+>    phantom Visa `4500700100123456` sitting inside `de_iban_rechnung_zahlung`'s account
+>    number, asserting the first is detected and the second is not. Anyone implementing this
+>    **re-runs the corpus measurement first** rather than assuming §10's numbers still hold.
+> 2. **Accepted.** The gap is written up as a known limitation in §10 (already drafted) *and*
+>    in the README's detection-limits section, in the user-facing register — not in a test
+>    name and not only in this document.
+>
+> Phase 2 is not done while this is neither. The reason for pinning it to this session
+> specifically is that it is the first moment the information needed to fix it exists;
+> deferring past it means deferring to no date at all.
 
 **M2 — real detection and speed.** Privacy Filter L2, policy engine with the sensitivity
 slider, decision cache, background pre-scanning, job-and-poll, simulation mode, audit log,

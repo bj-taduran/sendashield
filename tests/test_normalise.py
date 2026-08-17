@@ -26,6 +26,7 @@ from sendashield.normalise import (
     ZERO_WIDTH_CHARS,
     NormalisationError,
     _require_rfc5322_shape,
+    collapse_digit_separators,
     is_injection_suspicion,
     normalise,
     normalise_calendar,
@@ -1294,3 +1295,59 @@ class TestFailureModes:
         )
         with pytest.raises(NormalisationError):
             normalise(raw)
+
+
+class TestTheSeparatorDefinitionStaysSingular:
+    """`INTER_DIGIT_SEPARATOR` and its two compiled variants must never drift apart.
+
+    This exact drift has now happened twice in this module. First: the class was written out
+    in two places, both omitting the plain ASCII hyphen, and the fix landed in only one of
+    them. Second: `_INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE` was still a hand-written
+    `[\\s\\-.]`, so when the Unicode hyphen homoglyphs were added to the shared definition
+    to close a live evasion, the across-lines variant would have kept silently omitting every
+    one of them — the corpus-hygiene guard is its only caller, so a real card grouped with
+    U+FF0D could have entered git history unflagged.
+
+    Both variants are now derived from the one fragment. These tests are what stops a third
+    instance: they compare the two against each other rather than against a literal list, so
+    they cannot be satisfied by updating a copy.
+    """
+
+    #: Every character the shared definition claims to treat as a separator.
+    SEPARATORS = [" ", "\t", "\xa0", "\u3000", "-", ".", "‐", "‑", "‒", "−", "﹣", "－", "﹒", "．"]
+
+    @pytest.mark.parametrize("separator", SEPARATORS)
+    def test_both_variants_collapse_every_declared_separator(self, separator: str) -> None:
+        """The drift guard proper: neither variant may know a character the other does not."""
+        text = f"4242{separator}4242"
+        assert collapse_digit_separators(text) == "42424242", (
+            f"the default variant left {separator!r} in place"
+        )
+        assert collapse_digit_separators(text, across_lines=True) == "42424242", (
+            f"the across-lines variant left {separator!r} in place — it has drifted from "
+            f"INTER_DIGIT_SEPARATOR again"
+        )
+
+    def test_only_the_across_lines_variant_joins_across_a_newline(self) -> None:
+        """The one intended difference between them, asserted so it stays the only one."""
+        assert collapse_digit_separators("4242\n4242") == "4242\n4242"
+        assert collapse_digit_separators("4242\n4242", across_lines=True) == "42424242"
+
+    @pytest.mark.parametrize("dash", ["–", "—", "―"])
+    def test_neither_variant_joins_across_a_range_dash(self, dash: str) -> None:
+        """En dash, em dash and horizontal bar mean "to", not "grouped with".
+
+        Without this the homoglyph rule could be "fixed" by adding every dash-like character,
+        which would turn `1990–2000` into `19902000` and manufacture identifiers out of
+        ranges — the same failure refusing newlines exists to prevent.
+        """
+        assert collapse_digit_separators(f"1990{dash}2000") == f"1990{dash}2000"
+        assert collapse_digit_separators(f"1990{dash}2000", across_lines=True) == (
+            f"1990{dash}2000"
+        )
+
+    def test_separators_are_only_removed_between_two_digits(self) -> None:
+        """A lookbehind/lookahead pair, not a blanket strip — text must survive intact."""
+        assert collapse_digit_separators("Rechnung - 4242 4242 - bezahlt") == (
+            "Rechnung - 42424242 - bezahlt"
+        )

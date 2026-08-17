@@ -52,14 +52,51 @@ concatenated:
 6. **Strip zero-width characters** — the exact set in `ZERO_WIDTH_CHARS` below. This is
    one half of L0 invisible-content stripping; see the section below.
 7. **Normalise Unicode to NFC** (`unicodedata.normalize("NFC", text)`) — canonical
-   composition only. This deliberately does **not** use NFKC: a non-breaking space
-   (U+00A0) is a compatibility, not canonical, decomposition of U+0020, so NFC leaves it
-   alone. A fixture using NBSP between digit groups (`card_nbsp_grouped_digits_evasion`)
-   depends on that — those NBSPs stay verbatim in the normalised text, so a future L1
-   detector has to handle them explicitly rather than getting them collapsed away for
-   free here.
+   composition only, and deliberately **not NFKC**. See the NFC/NFKC section below; do not
+   "fix" this to NFKC without reading it.
 8. **Concatenate**: `subject + "\\n\\n" + body`. A missing `Subject` header is treated as
    `""`, so the text begins with `"\\n\\n"`.
+
+**NFC, not NFKC — why, and what it costs** (step 7)
+
+Written out because "normalise Unicode harder" reads as an obvious improvement, and the
+one-line change from `NFC` to `NFKC` is the kind of tidy-up that arrives in an unrelated
+commit. It is load-bearing, and its effects run in **both** directions:
+
+- **The reason it is NFC: offsets.** NFKC applies compatibility mappings, and several of
+  them change string *length* — `№` → `No` (1→2), `½` → `1⁄2` (1→3), `ﬁ` → `fi` (1→2).
+  This function defines the coordinate system every fixture offset indexes into (see the
+  top of this docstring), so a length-changing normalisation silently invalidates every
+  `start`/`end` in the corpus for any message containing one such character. NFC's
+  canonical compositions are length-stable in the ways that matter here. This is the
+  decisive argument and it is not about detection at all.
+- **NBSP survives, and a fixture depends on it.** U+00A0 is a *compatibility*
+  decomposition of U+0020, so NFC leaves it alone where NFKC would turn it into a plain
+  space. `card_nbsp_grouped_digits_evasion` relies on those NBSPs reaching L1 verbatim, so
+  a detector must handle them explicitly rather than getting them collapsed away for free
+  here — which `INTER_DIGIT_SEPARATOR` does, by matching `[^\\S\\n]`.
+- **Full-width digits reach L1 as written**, and are detected: `\\d`, `str.isdecimal()` and
+  `int()` all accept U+FF10–U+FF19, so `４２４２…` Luhn-validates and masks as the
+  full-width text the sender actually wrote. Note carefully that this does **not** depend
+  on NFC — NFKC would fold them to ASCII and they would be detected just the same. The
+  evasion resistance here is `\\d`'s, not this step's; the claim "full-width detection
+  needs NFC" is wrong and should not be repeated.
+- **What NFC costs, and where that cost is now paid.** Because NFC does not fold
+  compatibility forms, a look-alike separator arrives at L1 exactly as the sender wrote it.
+  U+FF0D FULLWIDTH HYPHEN-MINUS used to be absent from `INTER_DIGIT_SEPARATOR`, so
+  `4242－4242－4242－4242` broke into four short runs and **was detected by neither L1
+  detector** — a live evasion using a character no reader can tell from a hyphen. NFKC would
+  have folded it to ASCII `-` and closed that one case, which made the ledger genuinely
+  mixed rather than one-sided.
+
+  It is no longer mixed, because the cost was paid in the right place: the homoglyphs are
+  now in `INTER_DIGIT_SEPARATOR` (see `_HYPHEN_HOMOGLYPHS`), which fixed both detectors with
+  one edit and moved no offsets. **That is the argument against ever switching to NFKC**,
+  not merely a mitigation of it — a normalisation change would have bought the same evasion
+  resistance while silently invalidating every fixture offset, and would have hidden the
+  decision about *which* look-alikes count inside a Unicode table nobody in this repo chose.
+  U+3000 IDEOGRAPHIC SPACE needed nothing either way: `[^\\S\\n]` matches any Unicode
+  whitespace.
 
 **L0 invisible-content stripping** (`docs/architecture.md` §10, Control 1)
 
@@ -345,10 +382,63 @@ def _is_hidden_style(style: str) -> bool:
     return bool(_WHITE_TEXT_RE.search(style)) and not _BACKGROUND_COLOUR_RE.search(style)
 
 
+#: Unicode characters a human reader cannot tell apart from an ASCII hyphen, written as
+#: escapes because a file of look-alike punctuation is unreadable for exactly the reason
+#: they are an evasion in the first place:
+#:
+#:   U+2010 HYPHEN, U+2011 NON-BREAKING HYPHEN, U+2012 FIGURE DASH,
+#:   U+2212 MINUS SIGN, U+FE63 SMALL HYPHEN-MINUS, U+FF0D FULLWIDTH HYPHEN-MINUS
+#:
+#: U+2012 FIGURE DASH earns its place twice over: it is a hyphen look-alike *and* its
+#: documented purpose is separating digits, so it is a legitimate grouping character as well
+#: as an evasion vector.
+#:
+#: **Deliberately excluded: U+2013 EN DASH, U+2014 EM DASH, U+2015 HORIZONTAL BAR.** They
+#: look different from a hyphen and they mean something different — a range or a
+#: parenthetical. Treating them as separators would join `1990–2000` into `19902000`, which
+#: is the same "manufacture an identifier out of two unrelated numbers" failure that
+#: `collapse_digit_separators` refuses newlines for. The line is *homoglyph, not dash*: a
+#: character that renders as a hyphen is one an attacker substitutes to split an identifier
+#: invisibly; a character that renders as a dash is one an author uses to mean "to".
+_HYPHEN_HOMOGLYPHS = "‐‑‒−﹣－"
+
+#: The same reasoning for the full stop: U+FE52 SMALL FULL STOP, U+FF0E FULLWIDTH FULL STOP.
+#: U+2024 ONE DOT LEADER is excluded — it is a leader glyph belonging to a run of them in a
+#: table of contents, not a grouping mark between digits.
+_DOT_HOMOGLYPHS = "﹒．"
+
+#: The characters that may sit between two digits of one identifier: any whitespace except
+#: a newline (which includes U+00A0, since NFC leaves NBSP alone — see step 7), plus hyphen
+#: and dot **and their Unicode look-alikes**. Exported as a pattern *fragment* because L1
+#: detectors need to build their own expressions around it: a detector cannot simply
+#: collapse first and scan, because collapsing moves every offset and its spans have to
+#: point into the uncollapsed text.
+#:
+#: The homoglyphs are here rather than in a detector because the alternative is every
+#: detector deciding for itself what a hyphen is — which is how this class came to be
+#: written out twice with the plain ASCII hyphen missing from both. `4242－4242－4242－4242`
+#: was undetected by *both* L1 detectors until U+FF0D was added here, and adding it here
+#: fixed both at once. That is the whole argument for one definition, demonstrated.
+#:
+#: **This is the one definition.** Anything needing to know what a separator is must derive
+#: it from here rather than write the class out again — including the across-lines variant
+#: below, which used to be a second hand-written class and is now built from this one.
+#: `-` stays first in the class so it cannot be read as a range.
+INTER_DIGIT_SEPARATOR = rf"(?:[^\S\n]|[-.{_HYPHEN_HOMOGLYPHS}{_DOT_HOMOGLYPHS}])"
+
 #: Separators between digit groups, in the two variants anything in this project needs.
 #: Compiled once each rather than branching on a flag at call time.
-_INTER_DIGIT_SEPARATOR_RE = re.compile(r"(?<=\d)(?:[^\S\n]|[-.])+(?=\d)")
-_INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE = re.compile(r"(?<=\d)[\s\-.]+(?=\d)")
+#:
+#: The across-lines variant is the same class plus `\n`, **derived** rather than restated.
+#: It was `[\s\-.]`, a second hand-written copy that already omitted every homoglyph above
+#: and would have silently kept omitting them — the exact two-definitions-drift bug this
+#: module documents, lying in wait a second time. Since `[^\S\n]` is "whitespace but not
+#: newline", adding `\n` back reconstitutes `\s` exactly, so this is behaviour-preserving
+#: for everything the old class did cover.
+_INTER_DIGIT_SEPARATOR_RE = re.compile(rf"(?<=\d){INTER_DIGIT_SEPARATOR}+(?=\d)")
+_INTER_DIGIT_SEPARATOR_ACROSS_LINES_RE = re.compile(
+    rf"(?<=\d)(?:{INTER_DIGIT_SEPARATOR}|\n)+(?=\d)"
+)
 
 
 def collapse_digit_separators(text: str, *, across_lines: bool = False) -> str:
